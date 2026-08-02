@@ -27,6 +27,30 @@ const LEVELS: { value: CleanupLevel; label: string; hint: string }[] = [
   { value: "high", label: "High", hint: "Rewrite for brevity and polish." },
 ];
 
+const PTT_KEYS: { value: string; label: string }[] = [
+  { value: "ControlRight", label: "Right Ctrl" },
+  { value: "ControlLeft", label: "Left Ctrl" },
+  { value: "AltRight", label: "Right Alt" },
+  { value: "AltLeft", label: "Left Alt" },
+  { value: "ShiftRight", label: "Right Shift" },
+  { value: "ShiftLeft", label: "Left Shift" },
+  { value: "MetaRight", label: "Right Super/Windows" },
+  { value: "MetaLeft", label: "Left Super/Windows" },
+  { value: "CapsLock", label: "Caps Lock" },
+  { value: "F1", label: "F1" },
+  { value: "F2", label: "F2" },
+  { value: "F3", label: "F3" },
+  { value: "F4", label: "F4" },
+  { value: "F5", label: "F5" },
+  { value: "F6", label: "F6" },
+  { value: "F7", label: "F7" },
+  { value: "F8", label: "F8" },
+  { value: "F9", label: "F9" },
+  { value: "F10", label: "F10" },
+  { value: "F11", label: "F11" },
+  { value: "F12", label: "F12" },
+];
+
 function SectionTitle({ children, sub }: { children: React.ReactNode; sub?: string }) {
   return (
     <div style={{ marginBottom: 14 }}>
@@ -236,6 +260,37 @@ export function SettingsPane({
               </button>
             );
           })}
+        </div>
+      </Card>
+
+      <Card style={{ marginBottom: 16 }}>
+        <SectionTitle sub="Hold this key to start dictating, release to finish.">Push-to-Talk Key</SectionTitle>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          {PTT_KEYS.map((k) => {
+            const selected = settings.push_to_talk_key === k.value;
+            return (
+              <button
+                key={k.value}
+                onClick={() => onChange({ ...settings, push_to_talk_key: k.value })}
+                style={{
+                  cursor: "pointer",
+                  borderRadius: 8,
+                  padding: "8px 14px",
+                  fontFamily: font.ui,
+                  fontSize: 13,
+                  border: `1px solid ${selected ? theme.accentSoftBorder : theme.border}`,
+                  background: selected ? theme.accentSoft : theme.cardBgSubtle,
+                  color: selected ? theme.textStrong : theme.textBody,
+                  fontWeight: selected ? 600 : 400,
+                }}
+              >
+                {k.label}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ color: theme.textMuted, fontSize: 12.5, marginTop: 10 }}>
+          Changes take effect after restarting the app.
         </div>
       </Card>
 

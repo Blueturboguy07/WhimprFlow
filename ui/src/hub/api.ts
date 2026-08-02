@@ -14,6 +14,8 @@ export interface Settings {
   openai_base_url: string;
   anthropic_model: string;
   sound_on_start: boolean;
+  // Push-to-talk key variant string (e.g. "ControlRight", "AltLeft", "MetaLeft").
+  push_to_talk_key: string;
 }
 
 export interface Status {
@@ -57,6 +59,7 @@ export const DEFAULT_SETTINGS: Settings = {
   openai_base_url: "",
   anthropic_model: "claude-haiku-4-5",
   sound_on_start: true,
+  push_to_talk_key: "ControlRight",
 };
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {

@@ -307,20 +307,78 @@ fn on_ptt_up() {
 }
 
 // ── Global keyboard listener via rdev ────────────────────────────────────────────
-// Default push-to-talk: Right Ctrl (same as Windows)
+
+/// Parse a string like "ControlRight" into the corresponding rdev::Key.
+/// Returns None for unrecognized keys.
+fn parse_ptt_key(s: &str) -> Option<rdev::Key> {
+    use rdev::Key::*;
+    match s {
+        "ControlRight" => Some(ControlRight),
+        "ControlLeft" => Some(ControlLeft),
+        "AltRight" => Some(AltGr),
+        "AltLeft" => Some(Alt),
+        "ShiftRight" => Some(ShiftRight),
+        "ShiftLeft" => Some(ShiftLeft),
+        "MetaRight" => Some(MetaRight),
+        "MetaLeft" => Some(MetaLeft),
+        "CapsLock" => Some(CapsLock),
+        "F1" => Some(F1),
+        "F2" => Some(F2),
+        "F3" => Some(F3),
+        "F4" => Some(F4),
+        "F5" => Some(F5),
+        "F6" => Some(F6),
+        "F7" => Some(F7),
+        "F8" => Some(F8),
+        "F9" => Some(F9),
+        "F10" => Some(F10),
+        "F11" => Some(F11),
+        "F12" => Some(F12),
+        _ => {
+            eprintln!("[whimpr:linux] unrecognized push-to-talk key '{s}', falling back to ControlRight");
+            Some(ControlRight)
+        }
+    }
+}
+
+/// Human-readable label for a key variant string (shown in the startup message).
+fn ptt_key_label(s: &str) -> &str {
+    match s {
+        "ControlRight" => "Right Ctrl",
+        "ControlLeft" => "Left Ctrl",
+        "AltRight" => "Right Alt",
+        "AltLeft" => "Left Alt",
+        "ShiftRight" => "Right Shift",
+        "ShiftLeft" => "Left Shift",
+        "MetaRight" => "Right Super/Meta",
+        "MetaLeft" => "Left Super/Meta",
+        "CapsLock" => "Caps Lock",
+        s if s.starts_with('F') => s, // F1-F12
+        _ => s,
+    }
+}
 
 fn spawn_keyboard_listener() {
+    // Capture the configured key *now* (before the thread starts) so the
+    // listener always sees the key that was active at install time.
+    let ptt_key_str = current_settings_inner().push_to_talk_key;
+    let ptt_key = parse_ptt_key(&ptt_key_str);
+    let label = ptt_key_label(&ptt_key_str).to_string();
+
     std::thread::spawn(move || {
+        let Some(ptt_key) = ptt_key else {
+            eprintln!("[whimpr:linux] invalid push-to-talk key '{ptt_key_str}' — listener not started");
+            return;
+        };
         // Give the app a moment to fully initialize before hooking keys
         std::thread::sleep(Duration::from_millis(500));
-        eprintln!("[whimpr:linux] starting global keyboard listener (push-to-talk: Right Ctrl)");
+        eprintln!("[whimpr:linux] starting global keyboard listener (push-to-talk: {label})");
 
         if let Err(e) = rdev::listen(move |event| {
             use rdev::EventType::{KeyPress, KeyRelease};
-            use rdev::Key::ControlRight;
             match event.event_type {
-                KeyPress(ControlRight) => on_ptt_down(),
-                KeyRelease(ControlRight) => on_ptt_up(),
+                KeyPress(k) if k == ptt_key => on_ptt_down(),
+                KeyRelease(k) if k == ptt_key => on_ptt_up(),
                 _ => {}
             }
         }) {
@@ -385,9 +443,11 @@ pub fn install(app: AppHandle) {
     });
 
     // Start the global keyboard listener for push-to-talk
+    let settings = current_settings_inner();
+    let ptt_label = ptt_key_label(&settings.push_to_talk_key);
     spawn_keyboard_listener();
 
-    eprintln!("[whimpr:linux] installed — hold Right Ctrl to dictate");
+    eprintln!("[whimpr:linux] installed — hold {ptt_label} to dictate");
 }
 
 pub fn current_settings() -> whimpr_core::Settings {

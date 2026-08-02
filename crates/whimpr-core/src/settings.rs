@@ -36,6 +36,14 @@ pub struct Settings {
     pub anthropic_model: String,
     /// Play the record-start ping.
     pub sound_on_start: bool,
+    /// The push-to-talk key, stored as an rdev::Key variant string (e.g. "ControlRight").
+    /// Defaults to Right Ctrl.
+    #[serde(default = "default_push_to_talk_key")]
+    pub push_to_talk_key: String,
+}
+
+fn default_push_to_talk_key() -> String {
+    "ControlRight".to_string()
 }
 
 impl Default for Settings {
@@ -47,6 +55,7 @@ impl Default for Settings {
             openai_base_url: String::new(),
             anthropic_model: "claude-haiku-4-5".to_string(),
             sound_on_start: true,
+            push_to_talk_key: default_push_to_talk_key(),
         }
     }
 }
