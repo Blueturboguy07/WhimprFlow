@@ -13,6 +13,8 @@ mod local_llm;
 mod paste;
 #[cfg(target_os = "windows")]
 mod win;
+#[cfg(target_os = "linux")]
+mod linux;
 
 use serde::Serialize;
 use tauri::{
@@ -168,6 +170,16 @@ fn open_url(url: &str) {
     let _ = std::process::Command::new("open").arg(url).spawn();
 }
 
+#[cfg(target_os = "linux")]
+fn open_url(url: &str) {
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+}
+
+#[cfg(target_os = "windows")]
+fn open_url(url: &str) {
+    let _ = std::process::Command::new("cmd").args(["/c", "start", url]).spawn();
+}
+
 /// Request microphone access: trigger the native prompt (bundle has a usage string)
 /// by briefly opening the input device, and open the Microphone settings pane.
 #[tauri::command]
@@ -182,6 +194,18 @@ fn request_microphone() {
         });
         open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone");
     }
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux, microphone access is controlled by PipeWire/PulseAudio.
+        // Opening pavucontrol is the closest equivalent to macOS's permission pane.
+        std::thread::spawn(|| {
+            if let Ok(h) = whimpr_audio::start(|_: &[f32]| {}) {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                let _ = h.stop();
+            }
+        });
+        let _ = std::process::Command::new("pavucontrol").spawn();
+    }
 }
 
 /// Request Accessibility — the permission that makes the Fn key work in every app and
@@ -193,6 +217,13 @@ fn request_accessibility() {
         let _ = paste::prompt_accessibility();
         open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility");
     }
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux, keyboard input access is via the 'input' group.
+        // Open the system settings or print instructions.
+        eprintln!("[whimpr] Linux: ensure your user is in the 'input' group: sudo usermod -aG input $USER");
+        let _ = open_url("https://wiki.archlinux.org/title/Input_device");
+    }
 }
 
 /// Request Input Monitoring (needed for the Fn key to be seen in every app, not
@@ -203,6 +234,10 @@ fn request_input_monitoring() {
     {
         let _ = paste::request_input_monitoring();
         open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent");
+    }
+    #[cfg(target_os = "linux")]
+    {
+        eprintln!("[whimpr] Linux: input monitoring is handled via rdev (needs 'input' group membership)");
     }
 }
 

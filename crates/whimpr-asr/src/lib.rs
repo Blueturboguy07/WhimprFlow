@@ -59,13 +59,11 @@ impl AsrEngine for WhisperEngine {
             .full(params, pcm16k)
             .map_err(|e| anyhow::anyhow!("whisper full: {e}"))?;
 
-        let n = state
-            .full_n_segments()
-            .map_err(|e| anyhow::anyhow!("whisper n_segments: {e}"))?;
+        let n = state.full_n_segments();
         let mut text = String::new();
         for i in 0..n {
-            if let Ok(seg) = state.full_get_segment_text(i) {
-                text.push_str(&seg);
+            if let Some(seg) = state.get_segment(i) {
+                text.push_str(&seg.to_string());
             }
         }
 

@@ -123,7 +123,12 @@ pub use imp::{
     request_input_monitoring,
 };
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+pub fn paste_text(text: &str) -> anyhow::Result<()> {
+    crate::linux::paste_text(text)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn paste_text(_text: &str) -> anyhow::Result<()> {
     Ok(())
 }

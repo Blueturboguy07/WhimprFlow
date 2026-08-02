@@ -28,7 +28,24 @@ pub fn frontmost_bundle_id() -> Option<String> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+pub fn frontmost_bundle_id() -> Option<String> {
+    // Try xdotool first (most reliable on X11)
+    if let Ok(out) = std::process::Command::new("xdotool")
+        .args(["getactivewindow", "getwindowclassname"])
+        .output()
+    {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !s.is_empty() {
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
 pub fn frontmost_bundle_id() -> Option<String> {
     None
 }

@@ -16,8 +16,8 @@ anyhow = { workspace = true }
 hound = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-whisper-rs = { version = "0.12", features = ["metal"] }
+whisper-rs = { version = "0.16", features = ["metal"] }
 
-# No GPU feature on Windows yet — CPU backend first, Vulkan/CUDA can follow.
+# No GPU feature on Windows/Linux yet — CPU backend first, Vulkan/CUDA can follow.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-whisper-rs = { version = "0.12" }
+whisper-rs = { version = "0.16" }

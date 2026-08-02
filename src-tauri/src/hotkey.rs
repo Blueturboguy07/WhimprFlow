@@ -707,30 +707,9 @@ pub use crate::win::{
     history, install, rebuild_providers, stats_summary, update_settings,
 };
 
-// Other platforms (Linux, etc.): inert stubs so the crate still builds.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-mod other {
-    pub fn install(_app: tauri::AppHandle) {}
-    pub fn current_settings() -> whimpr_core::Settings {
-        whimpr_core::Settings::default()
-    }
-    pub fn update_settings(_new: whimpr_core::Settings) {}
-    pub fn rebuild_providers() {}
-    pub fn stats_summary(tz_offset_minutes: i32) -> whimpr_core::StatsSummary {
-        whimpr_core::StatsStore::default().summary(tz_offset_minutes, 0)
-    }
-    pub fn history(_limit: usize) -> Vec<whimpr_core::HistoryItem> {
-        Vec::new()
-    }
-    pub fn dictionary_entries() -> Vec<super::DictEntryDto> {
-        Vec::new()
-    }
-    pub fn dictionary_add(_correct: String, _mishears: Vec<String>) {}
-    pub fn dictionary_remove(_correct: &str) {}
-    pub fn dictionary_learn(_correct: String, _mishears: Vec<String>) {}
-}
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub use other::{
+// Linux: real platform layer (rdev hotkey + enigo paste + full pipeline).
+#[cfg(target_os = "linux")]
+pub use crate::linux::{
     current_settings, dictionary_add, dictionary_entries, dictionary_learn, dictionary_remove,
     history, install, rebuild_providers, stats_summary, update_settings,
 };

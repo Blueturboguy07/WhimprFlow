@@ -46,3 +46,10 @@ macos-accessibility-client = "0.0.1"
 objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication"] }
 objc2-foundation = { version = "0.3", features = ["NSString"] }
 objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMediaFormat"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Global keyboard listener (X11 + Wayland). Needs /dev/input access — add user to
+# the 'input' group if events aren't received.
+rdev = "0.5"
+# Keyboard simulation is done via ydotool (Wayland) or xdotool (X11) as subprocess
+# calls, avoiding libxdo/libei C dependency issues.
