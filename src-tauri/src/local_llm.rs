@@ -87,13 +87,23 @@ pub fn worker_bin_path() -> Option<PathBuf> {
     }
     // Dev fallback.
     #[cfg(target_os = "windows")]
-    {
-        let dev = std::env::current_dir()
-            .unwrap_or_default()
-            .join("target/release")
-            .join(exe_name);
-        return dev.exists().then_some(dev);
+{
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(debug_dir) = exe.parent() {
+            if let Some(target_dir) = debug_dir.parent() {
+                let dev = target_dir.join("release").join(exe_name);
+
+                eprintln!("Checking worker = {}", dev.display());
+
+                if dev.exists() {
+                    return Some(dev);
+                }
+            }
+        }
     }
+
+    return None;
+}
     #[cfg(not(target_os = "windows"))]
     {
         let home = std::env::var("HOME").unwrap_or_default();
@@ -121,12 +131,17 @@ pub fn model_path() -> PathBuf {
 
 /// Spawn the worker if both the binary and the model are present.
 pub fn spawn_default() -> Option<LocalWorker> {
-    let bin = worker_bin_path()?;
+    eprintln!("========== spawn_default called ==========");
+
+    let bin = worker_bin_path();
+    eprintln!("Worker path = {:?}", bin);
+
     let model = model_path();
-    if !model.exists() {
-        eprintln!("[whimpr] local model not found at {}", model.display());
-        return None;
-    }
+    eprintln!("Model path = {}", model.display());
+    eprintln!("Model exists = {}", model.exists());
+
+    let bin = bin?;
+
     match LocalWorker::spawn(&bin, &model) {
         Ok(w) => {
             eprintln!("[whimpr] local LLM worker started ({})", bin.display());

@@ -17,8 +17,13 @@ impl WhisperEngine {
         let path = model_path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("model path is not valid UTF-8"))?;
-        let ctx = WhisperContext::new_with_params(path, WhisperContextParameters::default())
-            .map_err(|e| anyhow::anyhow!("failed to load whisper model: {e}"))?;
+
+        let ctx = WhisperContext::new_with_params(
+            path,
+            WhisperContextParameters::default(),
+        )
+        .map_err(|e| anyhow::anyhow!("failed to load whisper model: {e}"))?;
+
         Ok(Self { ctx })
     }
 }
@@ -41,36 +46,52 @@ impl AsrEngine for WhisperEngine {
             .map_err(|e| anyhow::anyhow!("whisper create_state: {e}"))?;
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+
         params.set_language(Some("en"));
         params.set_translate(false);
+
+        // Disable whisper debug output
         params.set_print_special(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
+
         params.set_suppress_blank(true);
-        // Push-to-talk utterances are always one short clip, not long-form audio.
-        // Without this, whisper.cpp can split it into multiple internal segments
-        // that repeat the same words — which then get concatenated below,
-        // producing the sentence twice. Single-segment mode avoids that.
+
+        // Better for push-to-talk recordings
         params.set_single_segment(true);
         params.set_no_context(true);
+
+        // Enable timestamps internally
+        params.set_token_timestamps(true);
 
         state
             .full(params, pcm16k)
             .map_err(|e| anyhow::anyhow!("whisper full: {e}"))?;
 
-        let n = state
+        let n_segments = state
             .full_n_segments()
             .map_err(|e| anyhow::anyhow!("whisper n_segments: {e}"))?;
-        let mut text = String::new();
-        for i in 0..n {
-            if let Ok(seg) = state.full_get_segment_text(i) {
-                text.push_str(&seg);
+
+        let mut transcript = String::new();
+
+        for i in 0..n_segments {
+            let seg = state
+                .full_get_segment_text(i)
+                .map_err(|e| anyhow::anyhow!("segment text: {e}"))?;
+
+            let seg = seg.trim();
+
+            if !seg.is_empty() {
+                if !transcript.is_empty() {
+                    transcript.push(' ');
+                }
+                transcript.push_str(seg);
             }
         }
 
         Ok(Transcript {
-            text: text.trim().to_string(),
+            text: transcript.trim().to_string(),
             confidence: None,
         })
     }
