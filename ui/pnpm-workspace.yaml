@@ -5,6 +5,9 @@
 packages:
   - .
 
+allowBuilds:
+  esbuild: true
+
 # esbuild ships a postinstall that fetches its platform binary; without this it
 # is skipped and vite build dies on a missing binary.
 onlyBuiltDependencies:

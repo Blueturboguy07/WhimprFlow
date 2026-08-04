@@ -349,17 +349,20 @@ mod imp {
             ..Default::default()
         };
         // Run the on-device model with the same prompt + per-app formatting.
-        let run_local = || -> Option<anyhow::Result<String>> {
-            LOCAL.get().and_then(|m| {
-                m.lock().unwrap().as_mut().map(|w| {
-                    // System prompt + few-shot demonstration turns + the transcript,
-                    // so the on-device model actually produces newlines/lists and
-                    // resolves self-corrections instead of just being told to.
-                    let messages = whimpr_core::cleanup::build_messages(raw, &ctx);
-                    w.cleanup(&messages)
-                })
-            })
-        };
+        // Lazily create the local LLM worker only when Local cleanup is first used.
+       let run_local = || -> Option<anyhow::Result<String>> {
+    let worker = LOCAL.get_or_init(|| {
+        eprintln!("[whimpr] Loading local LLM...");
+        Mutex::new(crate::local_llm::spawn_default())
+    });
+
+    let mut worker = worker.lock().unwrap();
+
+    worker.as_mut().map(|w| {
+        let messages = whimpr_core::cleanup::build_messages(raw, &ctx);
+        w.cleanup(&messages)
+    })
+};
         // Selected provider, falling back to local when a cloud key can't be read
         // (so cleanup still runs) — and Local mode uses the worker directly.
         let result: Option<anyhow::Result<String>> = match settings.cleanup_mode {
@@ -620,14 +623,12 @@ mod imp {
         let _ = SETTINGS.set(Mutex::new(settings));
         let _ = DICTIONARY.set(Mutex::new(dict));
         let _ = STATS.set(Mutex::new(whimpr_core::StatsStore::load(&stats_path())));
+        
         rebuild_providers();
 
         // Start the local cleanup worker in the background (model load takes a few
         // seconds; the first local cleanup waits for it, subsequent ones are fast).
-        std::thread::spawn(|| {
-            let worker = crate::local_llm::spawn_default();
-            let _ = LOCAL.set(Mutex::new(worker));
-        });
+        
 
         // Accessibility is the ONE permission that makes the Fn CGEventTap global AND
         // lets us post the Cmd+V paste into other apps. Without it, a keyboard tap is

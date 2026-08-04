@@ -185,13 +185,20 @@ fn clean_transcript(raw: &str) -> String {
         ..Default::default()
     };
     let run_local = || -> Option<anyhow::Result<String>> {
-        LOCAL.get().and_then(|m| {
-            m.lock().unwrap().as_mut().map(|w| {
-                let messages = whimpr_core::cleanup::build_messages(&raw_norm, &ctx);
-                w.cleanup(&messages)
-            })
-        })
-    };
+    let local = LOCAL.get().unwrap();
+
+    let mut worker = local.lock().unwrap();
+
+    if worker.is_none() {
+        eprintln!("[whimpr:win] Loading local Qwen cleanup model...");
+        *worker = crate::local_llm::spawn_default();
+    }
+
+    worker.as_mut().map(|w| {
+        let messages = whimpr_core::cleanup::build_messages(&raw_norm, &ctx);
+        w.cleanup(&messages)
+    })
+};
     let result = match settings.cleanup_mode {
         CleanupMode::OpenAi => OPENAI
             .get()
@@ -323,13 +330,8 @@ pub fn install(app: AppHandle) {
         Err(e) => eprintln!("[whimpr:win] ASR load failed: {e}"),
     });
     // Start the local cleanup worker.
-    std::thread::spawn(|| {
-        if let Some(w) = crate::local_llm::spawn_default() {
-            if let Some(slot) = LOCAL.get() {
-                *slot.lock().unwrap() = Some(w);
-            }
-        }
-    });
+
+    
 
     spawn_hook_thread();
     eprintln!("[whimpr:win] keyboard hook installed (push-to-talk: Right Ctrl)");
