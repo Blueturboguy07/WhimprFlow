@@ -118,6 +118,12 @@ export function Onboarding({
   const inp = status.input_monitoring;
   const canEnter = acc && mic;
 
+  // Auto-advance the moment the required permissions are both granted so the
+  // user is not stuck on the onboarding screen after flipping them on.
+  useEffect(() => {
+    if (canEnter) onEnter();
+  }, [canEnter, onEnter]);
+
   return (
     <div
       style={{
