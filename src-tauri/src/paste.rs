@@ -49,6 +49,10 @@ mod imp {
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
         fn AXIsProcessTrusted() -> bool;
+        /// Re-queries TCC each call (no in-process cache) when the options dict is
+        /// null.  Pass null to check without prompting; the bool return is the live
+        /// grant status.
+        fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
     }
 
     const KCG_HID_EVENT_TAP: u32 = 0;
@@ -58,8 +62,14 @@ mod imp {
     /// Whether the app has Accessibility permission. This one grant governs BOTH the
     /// global Fn CGEventTap (untrusted taps are silently limited to frontmost-only)
     /// and posting the Cmd+V paste into other apps.
+    ///
+    /// Uses `AXIsProcessTrustedWithOptions(NULL)` instead of `AXIsProcessTrusted()`
+    /// because the latter caches its answer in-process and keeps returning `false`
+    /// even after the user grants the permission in System Settings — until the app
+    /// is relaunched.  Passing a NULL options dict skips the cache and re-queries TCC
+    /// on every call, so the UI reflects the live grant without a restart.
     pub fn is_trusted() -> bool {
-        unsafe { AXIsProcessTrusted() }
+        unsafe { AXIsProcessTrustedWithOptions(null()) }
     }
 
     /// Check Accessibility trust and, if missing, show the native prompt that offers
