@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { font } from "../tokens/values";
 import { theme } from "./theme";
 import { Button, Card, Dot, PageTitle, Segmented } from "./ui";
@@ -130,6 +130,13 @@ export function SettingsPane({
   status: Status;
   refresh: () => void;
 }) {
+  // Poll live so permission dots flip the moment macOS applies each grant —
+  // mirrors the same polling used on the Onboarding screen.
+  useEffect(() => {
+    const id = setInterval(refresh, 1500);
+    return () => clearInterval(id);
+  }, [refresh]);
+
   return (
     <div style={{ maxWidth: 720 }}>
       <PageTitle>Settings</PageTitle>
@@ -256,7 +263,7 @@ export function SettingsPane({
       </Card>
 
       <Card>
-        <SectionTitle sub="Grant these to WhimprFlow, then quit and reopen the app if a dot stays grey.">
+        <SectionTitle sub="Grant these to WhimprFlow — each dot turns green here within a second, no relaunch needed.">
           Permissions
         </SectionTitle>
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
