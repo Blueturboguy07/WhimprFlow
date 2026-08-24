@@ -22,6 +22,9 @@ export interface Status {
   input_monitoring: boolean;
   has_openai_key: boolean;
   has_anthropic_key: boolean;
+  // False for an ad-hoc signed build, whose permission grants macOS drops on
+  // every rebuild. Mirrors `signing::stable_identity` in src-tauri.
+  stable_identity: boolean;
 }
 
 export interface StatsSummary {
@@ -90,6 +93,7 @@ export async function getStatus(): Promise<Status> {
       input_monitoring: false,
       has_openai_key: false,
       has_anthropic_key: false,
+      stable_identity: true,
     };
   }
 }

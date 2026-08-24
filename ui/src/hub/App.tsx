@@ -132,6 +132,9 @@ export function App() {
     input_monitoring: false,
     has_openai_key: false,
     has_anthropic_key: false,
+    // Assume a stable signature until the backend says otherwise, so the
+    // unsigned-build warning never flashes during the first poll.
+    stable_identity: true,
   });
   const [lastError, setLastError] = useState<LastError | null>(null);
   const [errorDismissed, setErrorDismissed] = useState(false);

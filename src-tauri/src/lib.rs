@@ -12,6 +12,7 @@ mod diag;
 mod hotkey;
 mod local_llm;
 mod paste;
+mod signing;
 #[cfg(target_os = "windows")]
 mod win;
 
@@ -143,6 +144,9 @@ struct StatusReport {
     input_monitoring: bool,
     has_openai_key: bool,
     has_anthropic_key: bool,
+    /// False when this build is ad-hoc signed, in which case macOS forgets
+    /// every permission grant on the next rebuild. See `signing`.
+    stable_identity: bool,
 }
 
 #[tauri::command]
@@ -153,6 +157,7 @@ fn get_status() -> StatusReport {
         input_monitoring: paste::input_monitoring_granted(),
         has_openai_key: has_key("openai_api_key"),
         has_anthropic_key: has_key("anthropic_api_key"),
+        stable_identity: signing::stable_identity(),
     }
 }
 

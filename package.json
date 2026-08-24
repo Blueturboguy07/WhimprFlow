@@ -1,0 +1,9 @@
+{
+  "name": "whimprflow",
+  "private": true,
+  "description": "Repo-root package manifest. Tauri resolves beforeBuildCommand/beforeDevCommand by walking up from src-tauri/ to the nearest package.json; without this file that walk leaves the repository entirely and lands on whatever package.json happens to sit in a parent directory (a home directory one is common), where `pnpm build` fails with \"Command \\\"build\\\" not found\". Anchoring the walk here makes the build independent of what surrounds the checkout, and the scripts delegate to ui/ so they are correct from either directory.",
+  "scripts": {
+    "dev": "pnpm --dir ui dev",
+    "build": "pnpm --dir ui build"
+  }
+}

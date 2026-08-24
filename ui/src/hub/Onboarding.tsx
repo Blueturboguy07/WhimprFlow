@@ -98,6 +98,49 @@ function Step({
   );
 }
 
+// Shown when the running build is ad-hoc signed and Accessibility reads as
+// missing. That pair is almost never what it looks like: macOS attaches a
+// permission grant to the *designated requirement* of whoever asked for it,
+// and an ad-hoc signature's requirement is a plain hash of the binary. Rebuild
+// the app and that hash changes, so the grant the user gave stops matching —
+// while System Settings goes on listing WhimprFlow with its switch on, because
+// that list is drawn from the bundle name and path rather than the signature.
+//
+// The result is a user who has genuinely granted the permission, can see it
+// granted, and is told by this screen that they have not. Toggling it again
+// does nothing. Saying so plainly is the only way out, so this explains the
+// real cause instead of repeating the demand.
+function UnsignedBuildNotice() {
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: 12,
+        padding: "12px 14px",
+        marginBottom: 20,
+        borderRadius: 10,
+        background: "rgba(255,176,32,0.10)",
+        border: "1px solid rgba(255,176,32,0.40)",
+        lineHeight: 1.5,
+      }}
+    >
+      <span style={{ fontSize: 15, flex: "0 0 auto" }}>⚠</span>
+      <div style={{ fontSize: 12.5, color: theme.textBody }}>
+        <b>This copy of WhimprFlow is not signed.</b> If System Settings already shows WhimprFlow
+        switched on under Accessibility, macOS is not ignoring you — an unsigned build gets a new
+        identity every time it is compiled, so the permission you granted is still attached to the
+        previous build and can never match this one.
+        <div style={{ marginTop: 6, color: theme.textMuted }}>
+          To fix it for good, install a signed build (<code>scripts/build-macos.sh</code>, then{" "}
+          <code>scripts/install-macos.sh</code>). To carry on with this one, remove the stale
+          WhimprFlow entry in System Settings → Privacy &amp; Security → Accessibility with the{" "}
+          <b>–</b> button, then add this app again — and expect to repeat that after every rebuild.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Onboarding({
   status,
   refresh,
@@ -156,6 +199,8 @@ export function Onboarding({
           Grant these to <b>WhimprFlow</b>, in order. Each turns green here the moment macOS applies
           it — no relaunch needed.
         </p>
+
+        {!status.stable_identity && !acc && <UnsignedBuildNotice />}
 
         <Step
           n={1}
