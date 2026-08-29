@@ -99,6 +99,11 @@ mod imp {
     static CLOCK: OnceLock<Instant> = OnceLock::new();
     static FN_IS_DOWN: AtomicBool = AtomicBool::new(false);
     static TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
+    /// Set once at startup if no Whisper model file exists on disk at all —
+    /// distinct from "still loading", so the finalize path only shows the
+    /// user a loud "no speech model" error for the real case, not a race
+    /// against the ~1s background load right after launch.
+    static ASR_MODEL_MISSING: AtomicBool = AtomicBool::new(false);
     /// Bundle id of the app that was frontmost at record-start = the paste target.
     /// Cleanup uses it to format for the medium (email vs. text vs. chat).
     static TARGET_APP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -750,15 +755,31 @@ mod imp {
                         res.duration_secs(),
                         peak
                     );
+                    // Below ~600ms is very likely an accidental brief tap (the SPEC's
+                    // own single-tap-no-op gate), so don't alarm the user over it —
+                    // only surface a loud diagnostic for holds long enough to be a
+                    // real, intentional dictation attempt.
+                    let was_real_attempt = res.duration_secs() >= 0.6;
                     if peak < 0.005 {
                         eprintln!(
                             "[whimpr] ⚠ audio is silent — the mic isn't being captured. Grant \
                              Microphone access to your terminal (System Settings → Privacy & \
                              Security → Microphone), then fully quit + reopen it and rerun."
                         );
+                        if was_real_attempt {
+                            crate::diag::report(
+                                &app2,
+                                whimpr_core::InjectionFailure::NoAudioCaptured,
+                            );
+                        }
+                        finish();
+                        return;
                     }
                     let Some(asr) = ASR.get().cloned() else {
                         eprintln!("[whimpr] ASR not ready (model still loading or missing)");
+                        if was_real_attempt && ASR_MODEL_MISSING.load(Ordering::SeqCst) {
+                            crate::diag::report(&app2, whimpr_core::InjectionFailure::AsrUnavailable);
+                        }
                         finish();
                         return;
                     };
@@ -785,14 +806,31 @@ mod imp {
                                     eprintln!("[whimpr] routed to scratchpad");
                                 } else if let Err(e) = crate::paste::paste_text(&text) {
                                     eprintln!("[whimpr] paste failed: {e}");
+                                    // Distinguish the two real causes: Accessibility was
+                                    // never (or no longer) granted, vs. everything else
+                                    // (clipboard contention, etc.) — `is_trusted()` is the
+                                    // authoritative check, cheaper and more precise than
+                                    // matching on the error string.
+                                    let failure = if !crate::paste::is_trusted() {
+                                        whimpr_core::InjectionFailure::AccessibilityNotGranted
+                                    } else {
+                                        whimpr_core::InjectionFailure::ClipboardUnavailable
+                                    };
+                                    crate::diag::report(&app2, failure);
+                                } else {
+                                    crate::diag::clear_last_error();
                                 }
                                 play_cue(Cue::Done);
                                 // Log words + speaking time for the Hub stats (WPM, streak…).
                                 record_dictation(&text, res.duration_secs());
                                 // Watch the field for a post-paste correction to learn (✨).
+                                // Skipped while capturing to the Scratchpad: there is
+                                // no target field to watch for a correction.
                                 if !SCRATCHPAD_CAPTURE.load(Ordering::Relaxed) {
                                     crate::autolearn::watch_correction(&text);
                                 }
+                            } else if was_real_attempt {
+                                crate::diag::report(&app2, whimpr_core::InjectionFailure::EmptyTranscript);
                             }
                             let _ = app2.emit_to(
                                 OVERLAY_LABEL,
@@ -800,7 +838,12 @@ mod imp {
                                 TranscriptPayload { text },
                             );
                         }
-                        Err(e) => eprintln!("[whimpr] ASR error: {e}"),
+                        Err(e) => {
+                            eprintln!("[whimpr] ASR error: {e}");
+                            if was_real_attempt {
+                                crate::diag::report(&app2, whimpr_core::InjectionFailure::AsrUnavailable);
+                            }
+                        }
                     }
                     finish();
                 });
@@ -876,6 +919,7 @@ mod imp {
             let path = model_path();
             if !path.exists() {
                 eprintln!("[whimpr] ASR model not found at {}", path.display());
+                ASR_MODEL_MISSING.store(true, Ordering::SeqCst);
                 return;
             }
             match whimpr_asr::WhisperEngine::load(&path) {
@@ -888,7 +932,10 @@ mod imp {
                     }
                     eprintln!("[whimpr] ASR model loaded — ready to transcribe");
                 }
-                Err(e) => eprintln!("[whimpr] ASR model load failed: {e}"),
+                Err(e) => {
+                    eprintln!("[whimpr] ASR model load failed: {e}");
+                    ASR_MODEL_MISSING.store(true, Ordering::SeqCst);
+                }
             }
         });
 
@@ -951,23 +998,48 @@ mod imp {
                 std::thread::sleep(Duration::from_millis(500));
             }
             eprintln!("[whimpr] Accessibility present — creating global Fn tap");
-            let port = unsafe {
-                CGEventTapCreate(
-                    K_CG_SESSION_EVENT_TAP,
-                    K_CG_HEAD_INSERT,
-                    K_CG_TAP_OPTION_LISTEN_ONLY,
-                    EVENTS_OF_INTEREST,
-                    tap_callback,
-                    null_mut(),
-                )
-            };
-            if port.is_null() {
+            // Bug fix: this used to try CGEventTapCreate exactly once and, if it
+            // came back null despite Accessibility being granted (the real-world
+            // stale-TCC-entry case this app's own comments already knew about),
+            // give up FOREVER with only an eprintln — the Fn key would then do
+            // nothing for the rest of the run, indistinguishable from "text isn't
+            // typed" to the user, with zero visible explanation. Now: report it
+            // loudly once, and keep retrying — toggling the Accessibility entry
+            // off/on in System Settings, or removing and re-adding it, fixes the
+            // stale grant without requiring a relaunch, and this way that fix is
+            // picked up automatically.
+            let mut reported = false;
+            let port = loop {
+                let port = unsafe {
+                    CGEventTapCreate(
+                        K_CG_SESSION_EVENT_TAP,
+                        K_CG_HEAD_INSERT,
+                        K_CG_TAP_OPTION_LISTEN_ONLY,
+                        EVENTS_OF_INTEREST,
+                        tap_callback,
+                        null_mut(),
+                    )
+                };
+                if !port.is_null() {
+                    break port;
+                }
                 eprintln!(
                     "[whimpr] Fn tap null despite Accessibility — likely a stale TCC entry from \
                      an earlier build. Run: tccutil reset Accessibility com.whimpr.whimprflow, \
-                     then re-grant and relaunch."
+                     or toggle WhimprFlow off/on under System Settings → Privacy & Security → \
+                     Accessibility. Retrying…"
                 );
-                return;
+                if !reported {
+                    if let Some(app) = APP.get() {
+                        crate::diag::report(app, whimpr_core::InjectionFailure::HotkeyTapFailed);
+                    }
+                    reported = true;
+                }
+                std::thread::sleep(Duration::from_secs(5));
+            };
+            if reported {
+                eprintln!("[whimpr] Fn tap recovered — the key is live now.");
+                crate::diag::clear_last_error();
             }
             TAP_PORT.store(port, Ordering::SeqCst);
             unsafe {

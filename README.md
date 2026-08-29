@@ -67,34 +67,47 @@ Requires Rust (stable), Node + pnpm, and the Xcode command-line tools.
 
 ```bash
 cd ui && pnpm install && cd ..
+# If pnpm reports [ERR_PNPM_IGNORED_BUILDS] (esbuild's postinstall was
+# skipped), this is a one-time, harmless-if-not-needed insurance step:
+pnpm --dir ui approve-builds --all
 # Dev:
 ./dev.sh
-# Or a signed .app bundle:
+# Or a signed .app bundle — build ONLY via `tauri build`; a bare `cargo
+# build` + manual codesign will NOT bundle the UI and can drop TCC grants:
 ui/node_modules/.bin/tauri build --bundles app
 ```
 
-Models are **not** committed (they're multi-GB). Place them under
-`~/Library/Application Support/WhimprFlow/models/` (macOS) —
-a Whisper `ggml-*.en.bin` and a Qwen GGUF for local cleanup.
+Models are **not** committed (they're multi-GB) — see **[docs/MODELS.md](docs/MODELS.md)**
+for the exact file + download link (short version: `ggml-base.en.bin` is
+required, a Qwen GGUF for local/offline cleanup is optional).
 
 ## Build (Windows)
 
-Requires Rust (stable, MSVC toolchain), [CMake](https://cmake.org/download/), LLVM/clang
-(for `bindgen` — set `LIBCLANG_PATH` to its `bin/` dir if it isn't auto-detected), the
-**Visual Studio Build Tools** (Desktop development with C++ workload), and Node + pnpm.
+Requires Rust (stable, MSVC toolchain), [CMake](https://cmake.org/download/), the
+**Visual Studio Build Tools** (Desktop development with C++ workload), Node + pnpm,
+and **LLVM 18.1.x specifically** (not "latest" — see
+**[docs/BUILD-PREREQUISITES.md](docs/BUILD-PREREQUISITES.md)**, this is the #1
+first-build failure on Windows). Verify your toolchain before building:
+
+```powershell
+node scripts/check-build-prereqs.mjs
+```
 
 ```powershell
 cd ui; pnpm install; cd ..
+# If pnpm reports [ERR_PNPM_IGNORED_BUILDS] (esbuild's postinstall was
+# skipped), this is a one-time, harmless-if-not-needed insurance step:
+pnpm --dir ui approve-builds --all
 # Dev (starts the Vite UI server + the app with hot reload):
 ui\node_modules\.bin\tauri.CMD dev
-# Or a release build:
+# Or a release build — this produces an NSIS installer (.exe) on Windows:
 ui\node_modules\.bin\tauri.CMD build
 ```
 
-Place models under `%APPDATA%\WhimprFlow\models\` — a Whisper `ggml-*.en.bin`
-(e.g. `ggml-base.en.bin` from
-[huggingface.co/ggerganov/whisper.cpp](https://huggingface.co/ggerganov/whisper.cpp))
-and, optionally, a Qwen GGUF for local (offline) cleanup. No local LLM model?
+Place models under `%APPDATA%\WhimprFlow\models\` — see
+**[docs/MODELS.md](docs/MODELS.md)** for the exact file + download link
+(short version: `ggml-base.en.bin` is required, a Qwen GGUF for local/offline
+cleanup is optional). No local LLM model?
 Set Cleanup Engine to **OpenAI** in the Hub's Settings pane and point the base URL at
 any OpenAI-compatible API — for example `https://openrouter.ai/api/v1` for
 [OpenRouter](https://openrouter.ai), with your OpenRouter key pasted into the
@@ -107,6 +120,34 @@ planned but not wired up yet.
 The Windows GPU backend for Whisper/llama.cpp is CPU-only for now (the macOS build
 uses Metal); CUDA/Vulkan feature flags can be added in `crates/whimpr-asr/Cargo.toml`
 and `crates/whimpr-llm-worker/Cargo.toml` for anyone wanting to pick that up.
+
+## Troubleshooting: "I hold the key, speak, and nothing gets typed"
+
+WhimprFlow now surfaces the exact reason on the pill and in the Hub instead of
+failing silently (previously this only ever logged to a terminal, which is
+why it looked like nothing was happening at all). If you still hit this:
+
+- **macOS — Accessibility.** This is the #1 cause. Open **System Settings →
+  Privacy & Security → Accessibility** and confirm WhimprFlow is toggled ON.
+  The Hub's onboarding screen blocks you here on first launch; if you granted
+  it once and it still doesn't work, especially after **rebuilding** the app,
+  see the next point.
+- **macOS — "granted but still nothing" after a rebuild.** Every local
+  `tauri build` produces a differently-signed binary, and macOS can leave a
+  stale Accessibility entry for the old signature that *looks* granted but
+  isn't. Fix: in System Settings → Privacy & Security → Accessibility, remove
+  WhimprFlow with the **−** button and re-add it (or toggle it off/on), then
+  relaunch. WhimprFlow's pill and Hub will now show "Fn key isn't wired up"
+  when this happens instead of just doing nothing.
+- **Windows — Right Ctrl does nothing.** Another app may be holding a
+  conflicting global keyboard hook (some anti-cheat/security tools do this);
+  close it and relaunch WhimprFlow.
+- **No speech model.** See [docs/MODELS.md](docs/MODELS.md) — dictation needs
+  a Whisper `ggml-*.bin` file placed by hand; the app doesn't download one for
+  you.
+- Still stuck? Run the app from a terminal (`./dev.sh` on macOS, or the built
+  `.exe` from PowerShell on Windows) and hold the key once — every failure
+  path also logs a `[whimpr]`-prefixed line explaining what happened.
 
 ## Notes & disclaimers
 

@@ -1,7 +1,5 @@
 # ui/ is a single package, not a multi-package workspace — but pnpm refuses to
-# run at all if this file exists without a `packages` field, which is what made
-# `pnpm --dir ui build` fail and forced the v0.1.0 build to bypass Tauri's
-# beforeBuildCommand entirely.
+# run at all if this file exists without a `packages` field.
 packages:
   - .
 
@@ -9,6 +7,10 @@ allowBuilds:
   esbuild: true
 
 # esbuild ships a postinstall that fetches its platform binary; without this it
-# is skipped and vite build dies on a missing binary.
+# is skipped and vite build dies on a missing binary. NOTE: this alone does not
+# always prevent pnpm's [ERR_PNPM_IGNORED_BUILDS] prompt on a machine whose
+# global pnpm store already has an *unapproved* esbuild cached from some other
+# project — if you hit that, run `pnpm approve-builds --all` once (see the
+# README's Build sections); it's a no-op when not needed.
 onlyBuiltDependencies:
   - esbuild

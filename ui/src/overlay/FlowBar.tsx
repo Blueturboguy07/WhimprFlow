@@ -13,6 +13,8 @@ export type BarState =
 
 type StateEvent = { state: BarState };
 type WaveformEvent = { bars: number[] };
+// Mirrors `diag::ErrorDto` in src-tauri/src/diag.rs.
+type ErrorEvent = { headline: string; detail: string };
 
 async function tauriListen<T>(event: string, cb: (payload: T) => void): Promise<() => void> {
   try {
@@ -280,6 +282,9 @@ function StopButton() {
 export function FlowBar() {
   const [state, setState] = useState<BarState>("idle");
   const [bars, setBars] = useState<number[]>([]);
+  // Set by `whimpr://error`, shown while state === "error". Falls back to a
+  // generic line if the error-state event somehow arrives without one.
+  const [errorText, setErrorText] = useState<ErrorEvent | null>(null);
   // Pending click-vs-drag decision; see the pill's onMouseDown.
   const dragTimer = useRef<number | null>(null);
   const [hover, setHover] = useState(false);
@@ -342,38 +347,65 @@ export function FlowBar() {
   useEffect(() => {
     let un1: (() => void) | undefined;
     let un2: (() => void) | undefined;
+    let un3: (() => void) | undefined;
     tauriListen<StateEvent>("whimpr://flowbar/state", (p) => setState(p.state)).then((u) => (un1 = u));
     tauriListen<WaveformEvent>("whimpr://audio/waveform", (p) => setBars(p.bars)).then((u) => (un2 = u));
+    tauriListen<ErrorEvent>("whimpr://error", (p) => setErrorText(p)).then((u) => (un3 = u));
     return () => {
       un1?.();
       un2?.();
+      un3?.();
     };
   }, []);
 
   const recording = state === "recording" || state === "locked";
   const isIdle = state === "idle";
   const processing = state === "transcribing";
+  const isError = state === "error";
   const statusText =
     state === "transcribing"
       ? "Cleaning up…"
-      : state === "error"
-        ? "Something's off"
+      : isError
+        ? errorText?.headline ?? "Something's off"
         : state === "cancelled"
           ? "Discarded"
           : "Done";
 
   // Pill dimensions per state. The idle nub is deliberately tiny so it doesn't
   // nag, but that also made it undiscoverable — so hovering expands it into a
-  // labelled affordance that says what a click will do.
+  // labelled affordance that says what a click will do. Error gets extra width
+  // so the specific headline isn't clipped back to "Something's off".
   const dims = isIdle
     ? hover
       ? { w: 158, h: 38 }
       : { w: 76, h: 16 }
     : recording
       ? { w: 250, h: 44 }
-      : { w: 180, h: 36 };
+      : isError
+        ? { w: 280, h: 36 }
+        : { w: 180, h: 36 };
 
   const showActions = isIdle && hover;
+
+  // The window is sized to the content, not the other way round. Anything left
+  // over would be an invisible rectangle above the Dock that eats clicks meant
+  // for the app underneath — which is exactly what it used to be.
+  const win = showActions
+    ? { w: 320, h: 132 } // capsule + gap + button row
+    : isIdle
+      ? { w: 100, h: 26 }
+      : { w: dims.w + 24, h: dims.h + 14 };
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("set_overlay_size", { width: win.w, height: win.h });
+      } catch {
+        /* browser preview */
+      }
+    })();
+  }, [win.w, win.h]);
 
   return (
     // Bottom-aligned so the resting nub keeps its position and the hover UI grows
@@ -389,16 +421,36 @@ export function FlowBar() {
         paddingBottom: 4,
         fontFamily: font.ui,
         userSelect: "none",
-      }}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => {
-        setHover(false);
-        setTip(null);
+        // No hover handler here: this fills the whole window, so listening on it
+        // meant the cluster opened whenever the pointer was anywhere inside the
+        // window rather than actually over the pill.
+        pointerEvents: "none",
       }}
     >
       <div
-        aria-label={`WhimprFlow ${state}`}
-        title={isIdle ? "Click to dictate · hold to move" : "Hold to move"}
+        // The hover target is this cluster — the pill plus, once open, the
+        // button row — so it tracks the visible thing rather than the window.
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => {
+          setHover(false);
+          setTip(null);
+        }}
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          pointerEvents: "auto",
+        }}
+      >
+      <div
+        aria-label={`WhimprFlow ${state}${isError && errorText ? `: ${errorText.detail}` : ""}`}
+        title={
+          isError
+            ? errorText?.detail
+            : isIdle
+              ? "Click to dictate · hold to move"
+              : "Hold to move"
+        }
         // A quick click and a drag both begin with mousedown, and the native
         // drag takes over the mouse the moment it starts — so the two are told
         // apart by time: release within 180ms is a click, keep holding and it
@@ -503,6 +555,7 @@ export function FlowBar() {
           </RoundButton>
         </div>
       )}
+      </div>
     </div>
   );
 }

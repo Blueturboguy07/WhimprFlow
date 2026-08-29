@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { font } from "../tokens/values";
+import { font, palette } from "../tokens/values";
 import { theme } from "./theme";
 import { Onboarding } from "./Onboarding";
 import { Sidebar, type Page } from "./Sidebar";
@@ -18,10 +18,89 @@ import {
   getSettings,
   setSettings,
   getStatus,
+  getLastError,
+  requestAccessibility,
   type Settings,
   type Status,
+  type LastError,
   DEFAULT_SETTINGS,
 } from "./api";
+
+// A slim, dismissible warning strip shown above the Hub content whenever
+// something is stopping dictation from reaching the cursor — either a
+// permission that lapsed after the onboarding gate was already passed (e.g.
+// a rebuild invalidated a stale macOS Accessibility grant), or the last loud
+// diagnostic reported by the dictation pipeline (`diag::report` in
+// src-tauri). Without this, a permission revoked (or a hotkey tap that died)
+// mid-session was previously invisible outside the terminal — see the
+// "text is not writing where the cursor is" bug reports.
+function ErrorBanner({
+  headline,
+  detail,
+  actionLabel,
+  onAction,
+  onDismiss,
+}: {
+  headline: string;
+  detail: string;
+  actionLabel?: string;
+  onAction?: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 14,
+        padding: "10px 20px",
+        background: "rgba(255,107,107,0.12)",
+        borderBottom: `1px solid rgba(255,107,107,0.35)`,
+        fontFamily: font.ui,
+      }}
+    >
+      <span style={{ fontSize: 15, flex: "0 0 auto" }}>⚠</span>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: palette.slate900 }}>{headline}</span>
+        <span style={{ fontSize: 13, color: theme.textMuted, marginLeft: 8 }}>{detail}</span>
+      </div>
+      {actionLabel && onAction && (
+        <button
+          onClick={onAction}
+          style={{
+            flex: "0 0 auto",
+            cursor: "pointer",
+            border: "none",
+            borderRadius: 8,
+            padding: "6px 12px",
+            fontSize: 12.5,
+            fontWeight: 600,
+            fontFamily: font.ui,
+            color: "#fff",
+            background: palette.error,
+          }}
+        >
+          {actionLabel}
+        </button>
+      )}
+      <button
+        onClick={onDismiss}
+        aria-label="Dismiss"
+        style={{
+          flex: "0 0 auto",
+          cursor: "pointer",
+          border: "none",
+          background: "transparent",
+          color: theme.textFaint,
+          fontSize: 14,
+          padding: 4,
+        }}
+      >
+        ✕
+      </button>
+    </div>
+  );
+}
 
 // Every screen is built now; kept so a future stub has somewhere to live.
 const SOON: Partial<Record<Page, { icon: IconName; title: string; desc: string }>> = {};
@@ -37,12 +116,41 @@ export function App() {
     has_openai_key: false,
     has_anthropic_key: false,
   });
+  const [lastError, setLastError] = useState<LastError | null>(null);
+  const [errorDismissed, setErrorDismissed] = useState(false);
 
   const refresh = () => getStatus().then(setStatus);
 
   useEffect(() => {
     getSettings().then(setLocalSettings);
     refresh();
+    getLastError().then(setLastError);
+  }, []);
+
+  // Keep polling permission status for the whole session, not just during
+  // onboarding — a permission can lapse after `entered` is already true (a
+  // rebuild with a new ad-hoc signature invalidates a prior macOS
+  // Accessibility grant; see the "stale TCC entry" case in hotkey.rs), and
+  // that used to go completely unnoticed until the user dug through logs.
+  useEffect(() => {
+    const id = setInterval(refresh, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Live-update the moment the dictation pipeline reports a failure
+  // (`diag::report` in src-tauri), instead of waiting for the next poll.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<LastError>("whimpr://error", (e) => {
+          setLastError(e.payload);
+          setErrorDismissed(false);
+        }),
+      )
+      .then((u) => (unlisten = u))
+      .catch(() => {});
+    return () => unlisten?.();
   }, []);
 
   const update = (s: Settings) => {
@@ -57,33 +165,63 @@ export function App() {
 
   const soon = SOON[page];
 
+  // Two independent reasons for the post-onboarding banner: Accessibility
+  // lapsed after entry (checked live against `status`, not just the one-time
+  // onboarding gate), or the pipeline reported some other failure (hotkey tap
+  // dead, paste failed, empty transcript, …).
+  const accessibilityLapsed = entered && !status.accessibility;
+  const banner = errorDismissed
+    ? null
+    : accessibilityLapsed
+      ? {
+          headline: "Accessibility permission needed",
+          detail: "WhimprFlow can no longer type into other apps — grant it again to keep dictating.",
+          actionLabel: "Grant Accessibility",
+          onAction: () => requestAccessibility(),
+        }
+      : lastError
+        ? { headline: lastError.headline, detail: lastError.detail }
+        : null;
+
   return (
     <div
       style={{
         display: "flex",
+        flexDirection: "column",
         height: "100vh",
         fontFamily: font.ui,
         color: theme.textBody,
         background: theme.pageBg,
       }}
     >
-      <Sidebar page={page} setPage={setPage} />
-      <main style={{ flex: 1, minWidth: 0, overflowY: "auto" }}>
-        <div style={{ padding: "36px 44px", margin: "0 auto", maxWidth: 1120 }}>
-          {page === "home" && <Home />}
-          {page === "insights" && <Insights />}
-          {page === "dictionary" && <DictionaryPane />}
-          {page === "snippets" && <SnippetsPane />}
-          {page === "scratchpad" && <ScratchpadPane />}
-          {page === "transforms" && <TransformsPane />}
-          {page === "style" && <StylePane settings={settings} onChange={update} />}
-          {page === "settings" && (
-            <SettingsPane settings={settings} onChange={update} status={status} refresh={refresh} />
-          )}
-          {page === "help" && <Help />}
-          {soon && <ComingSoon icon={soon.icon} title={soon.title} desc={soon.desc} />}
-        </div>
-      </main>
+      {banner && (
+        <ErrorBanner
+          headline={banner.headline}
+          detail={banner.detail}
+          actionLabel={banner.actionLabel}
+          onAction={banner.onAction}
+          onDismiss={() => setErrorDismissed(true)}
+        />
+      )}
+      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+        <Sidebar page={page} setPage={setPage} />
+        <main style={{ flex: 1, minWidth: 0, overflowY: "auto" }}>
+          <div style={{ padding: "36px 44px", margin: "0 auto", maxWidth: 1120 }}>
+            {page === "home" && <Home />}
+            {page === "insights" && <Insights />}
+            {page === "dictionary" && <DictionaryPane />}
+            {page === "snippets" && <SnippetsPane />}
+            {page === "scratchpad" && <ScratchpadPane />}
+            {page === "transforms" && <TransformsPane />}
+            {page === "style" && <StylePane settings={settings} onChange={update} />}
+            {page === "settings" && (
+              <SettingsPane settings={settings} onChange={update} status={status} refresh={refresh} />
+            )}
+            {page === "help" && <Help />}
+            {soon && <ComingSoon icon={soon.icon} title={soon.title} desc={soon.desc} />}
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

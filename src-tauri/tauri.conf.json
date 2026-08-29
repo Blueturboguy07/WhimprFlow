@@ -4,9 +4,9 @@
   "version": "0.1.1",
   "identifier": "com.whimpr.whimprflow",
   "build": {
-    "beforeDevCommand": "pnpm --dir ui dev",
+    "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm --dir ui build",
+    "beforeBuildCommand": "pnpm build",
     "frontendDist": "../ui/dist"
   },
   "app": {

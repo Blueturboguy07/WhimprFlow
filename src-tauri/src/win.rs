@@ -41,6 +41,9 @@ const PTT_VK: u16 = VK_RCONTROL.0;
 static APP: OnceLock<AppHandle> = OnceLock::new();
 static CLOCK: OnceLock<Instant> = OnceLock::new();
 static RECORDING: AtomicBool = AtomicBool::new(false);
+/// Set once at startup if no Whisper model file exists on disk at all —
+/// distinct from "still loading". Mirrors the macOS flag in `hotkey.rs`.
+static ASR_MODEL_MISSING: AtomicBool = AtomicBool::new(false);
 static CAPTURE: OnceLock<Mutex<Option<whimpr_audio::CaptureHandle>>> = OnceLock::new();
 static ASR: OnceLock<Arc<whimpr_asr::WhisperEngine>> = OnceLock::new();
 static LOCAL: OnceLock<Mutex<Option<crate::local_llm::LocalWorker>>> = OnceLock::new();
@@ -251,20 +254,63 @@ fn on_ptt_up() {
     let app = foreground_app();
     let handle = CAPTURE.get().and_then(|slot| slot.lock().unwrap().take());
     std::thread::spawn(move || {
+        // Below ~600ms is very likely an accidental brief tap, so don't alarm
+        // the user over it — only surface a loud diagnostic for holds long
+        // enough to be a real, intentional dictation attempt. Bug fix: this
+        // whole function used to fail silently on every one of these paths
+        // (no eprintln, no UI signal, nothing) — indistinguishable from
+        // "held the key, spoke, nothing happened".
         let Some(res) = handle.and_then(|h| h.stop()) else {
+            eprintln!("[whimpr:win] no audio captured");
             return;
         };
+        let was_real_attempt = res.duration_secs() >= 0.6;
+        let peak = res.samples.iter().fold(0f32, |m, &s| m.max(s.abs()));
+        if peak < 0.005 {
+            eprintln!("[whimpr:win] ⚠ audio is silent — the mic isn't being captured");
+            if was_real_attempt {
+                if let Some(app) = APP.get() {
+                    crate::diag::report(app, whimpr_core::InjectionFailure::NoAudioCaptured);
+                }
+            }
+            return;
+        }
         let Some(asr) = ASR.get().cloned() else {
+            eprintln!("[whimpr:win] ASR not ready (model still loading or missing)");
+            if was_real_attempt && ASR_MODEL_MISSING.load(Ordering::SeqCst) {
+                if let Some(app) = APP.get() {
+                    crate::diag::report(app, whimpr_core::InjectionFailure::AsrUnavailable);
+                }
+            }
             return;
         };
         let pcm = whimpr_audio::resample_to_16k(&res.samples, res.sample_rate);
-        if let Ok(t) = asr.transcribe(&pcm) {
-            let text = clean_transcript(&t.text);
-            if !text.is_empty() {
-                if let Err(e) = paste_text(&text) {
-                    eprintln!("[whimpr:win] paste failed: {e}");
+        match asr.transcribe(&pcm) {
+            Ok(t) => {
+                let text = clean_transcript(&t.text);
+                if !text.is_empty() {
+                    if let Err(e) = paste_text(&text) {
+                        eprintln!("[whimpr:win] paste failed: {e}");
+                        if let Some(app) = APP.get() {
+                            crate::diag::report(app, whimpr_core::InjectionFailure::ClipboardUnavailable);
+                        }
+                    } else {
+                        crate::diag::clear_last_error();
+                    }
+                    record_dictation(&text, res.duration_secs(), app);
+                } else if was_real_attempt {
+                    if let Some(app) = APP.get() {
+                        crate::diag::report(app, whimpr_core::InjectionFailure::EmptyTranscript);
+                    }
                 }
-                record_dictation(&text, res.duration_secs(), app);
+            }
+            Err(e) => {
+                eprintln!("[whimpr:win] ASR error: {e}");
+                if was_real_attempt {
+                    if let Some(app) = APP.get() {
+                        crate::diag::report(app, whimpr_core::InjectionFailure::AsrUnavailable);
+                    }
+                }
             }
         }
     });
@@ -289,14 +335,37 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
 
 /// Install the hook on a dedicated thread with its own message pump (required for
 /// WH_KEYBOARD_LL to deliver events).
+///
+/// Bug fix: this used to try `SetWindowsHookExW` exactly once and, on failure,
+/// give up FOREVER with only an `eprintln!` — Right Ctrl would then do nothing
+/// for the rest of the run, indistinguishable from "text isn't typed" with no
+/// visible explanation. Now it reports the failure loudly (once) and keeps
+/// retrying, so recovering (e.g. after whatever was holding a conflicting
+/// global hook closes) doesn't require relaunching WhimprFlow.
 fn spawn_hook_thread() {
     std::thread::spawn(|| unsafe {
         let hinst = GetModuleHandleW(None).unwrap_or_default();
-        let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), hinst, 0);
-        if hook.is_err() {
-            eprintln!("[whimpr:win] failed to install keyboard hook");
-            return;
+        let mut reported = false;
+        let hook = loop {
+            match SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), hinst, 0) {
+                Ok(h) => break h,
+                Err(_) => {
+                    eprintln!("[whimpr:win] failed to install keyboard hook — retrying…");
+                    if !reported {
+                        if let Some(app) = APP.get() {
+                            crate::diag::report(app, whimpr_core::InjectionFailure::HotkeyTapFailed);
+                        }
+                        reported = true;
+                    }
+                    std::thread::sleep(Duration::from_secs(5));
+                }
+            }
+        };
+        if reported {
+            eprintln!("[whimpr:win] keyboard hook recovered — Right Ctrl is live now.");
+            crate::diag::clear_last_error();
         }
+        let _ = hook; // keeps the hook alive for the lifetime of this thread
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {}
     });
@@ -315,12 +384,23 @@ pub fn install(app: AppHandle) {
     rebuild_providers();
 
     // Load Whisper.
-    std::thread::spawn(|| match whimpr_asr::WhisperEngine::load(&whisper_model_path()) {
-        Ok(engine) => {
-            let _ = ASR.set(Arc::new(engine));
-            eprintln!("[whimpr:win] ASR ready");
+    std::thread::spawn(|| {
+        let path = whisper_model_path();
+        if !path.exists() {
+            eprintln!("[whimpr:win] ASR model not found at {}", path.display());
+            ASR_MODEL_MISSING.store(true, Ordering::SeqCst);
+            return;
         }
-        Err(e) => eprintln!("[whimpr:win] ASR load failed: {e}"),
+        match whimpr_asr::WhisperEngine::load(&path) {
+            Ok(engine) => {
+                let _ = ASR.set(Arc::new(engine));
+                eprintln!("[whimpr:win] ASR ready");
+            }
+            Err(e) => {
+                eprintln!("[whimpr:win] ASR load failed: {e}");
+                ASR_MODEL_MISSING.store(true, Ordering::SeqCst);
+            }
+        }
     });
     // Start the local cleanup worker.
     std::thread::spawn(|| {

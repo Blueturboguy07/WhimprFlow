@@ -8,6 +8,7 @@
 
 mod appctx;
 mod autolearn;
+mod diag;
 mod hotkey;
 mod local_llm;
 mod paste;
@@ -31,8 +32,24 @@ const OVERLAY_LABEL: &str = "whimpr_bar";
 /// wrong by the ratio between them. Moving from a 1× screen to the 2× laptop
 /// computed the pill as 160×70 instead of 320×132 and parked it under the Dock.
 /// The window is not resizable, so its logical size never changes.
-const OVERLAY_W_PT: f64 = 320.0;
-const OVERLAY_H_PT: f64 = 132.0;
+/// Size the overlay starts at: just the resting nub, nothing more.
+const OVERLAY_IDLE_W_PT: f64 = 100.0;
+const OVERLAY_IDLE_H_PT: f64 = 26.0;
+
+/// The overlay's CURRENT logical size.
+///
+/// The window used to be a fixed 320×132 — big enough for the hover cluster —
+/// with a tiny nub drawn inside it. That left a large invisible rectangle above
+/// the Dock that swallowed clicks meant for the app underneath, and made the
+/// hover UI open whenever the pointer entered anywhere in that rectangle rather
+/// than the pill itself. The window is now resized to match whatever is drawn,
+/// and this is what the placement maths measures.
+static OVERLAY_SIZE: std::sync::Mutex<(f64, f64)> =
+    std::sync::Mutex::new((OVERLAY_IDLE_W_PT, OVERLAY_IDLE_H_PT));
+
+fn overlay_size() -> (f64, f64) {
+    *OVERLAY_SIZE.lock().unwrap()
+}
 const HUB_LABEL: &str = "main";
 
 #[derive(Clone, Serialize)]
@@ -159,7 +176,7 @@ fn desired_overlay_position(
     let following = settings.pill_follows_active_display;
     let monitor = pill_monitor(w, following)?;
     let (ax, ay, aw, ah) = work_area_logical(&monitor);
-    let (ww, wh) = (OVERLAY_W_PT, OVERLAY_H_PT);
+    let (ww, wh) = overlay_size();
 
     let (x, y) = match settings.pill_pos {
         // Still clamped, so a stale pinned position can't hide under the Dock.
@@ -206,6 +223,35 @@ pub(crate) fn sync_pill_visibility(app: &tauri::AppHandle, state: &str) {
         let _ = w.show();
     } else {
         let _ = w.hide();
+    }
+}
+
+/// Resize the overlay to fit what the pill is currently drawing, then re-anchor
+/// it so it stays bottom-centred above the Dock as it grows and shrinks.
+///
+/// Called from the UI because only the UI knows how big the content is. Sizes
+/// are logical points.
+#[tauri::command]
+fn set_overlay_size(app: tauri::AppHandle, width: f64, height: f64) {
+    // Guard against a nonsense size leaving an unclickable or screen-filling
+    // window if the UI ever miscalculates.
+    let w = width.clamp(40.0, 900.0);
+    let h = height.clamp(16.0, 400.0);
+
+    {
+        let mut cur = OVERLAY_SIZE.lock().unwrap();
+        if (cur.0 - w).abs() < 0.5 && (cur.1 - h).abs() < 0.5 {
+            return; // already this size
+        }
+        *cur = (w, h);
+    }
+
+    if let Some(win) = app.get_webview_window(OVERLAY_LABEL) {
+        let _ = win.set_size(tauri::LogicalSize::new(w, h));
+        // Re-anchor immediately: growing upward from a bottom-anchored window
+        // means the position has to change too, or the pill appears to slide
+        // down as it expands.
+        position_overlay(&win);
     }
 }
 
@@ -455,7 +501,7 @@ fn build_overlay(app: &tauri::App) -> tauri::Result<WebviewWindow> {
     // Sized for the hover cluster: a "Dictate fn" tooltip stacked above a row of
     // action buttons. The content is bottom-aligned, so the resting nub still sits
     // at the bottom edge and everything above it is transparent until you hover.
-    .inner_size(OVERLAY_W_PT, OVERLAY_H_PT)
+    .inner_size(OVERLAY_IDLE_W_PT, OVERLAY_IDLE_H_PT)
     .decorations(false)
     .transparent(true)
     .shadow(false)
@@ -567,6 +613,15 @@ fn get_status() -> StatusReport {
     }
 }
 
+/// The most recent loud diagnostic (permission/injection failure), if any —
+/// lets the Hub show what went wrong even if it was opened after the fact.
+/// See `diag::report`, called from the dictation pipeline whenever text
+/// fails to reach the cursor.
+#[tauri::command]
+fn get_last_error() -> Option<diag::ErrorDto> {
+    diag::last_error()
+}
+
 fn has_key(account: &str) -> bool {
     keyring::Entry::new("com.whimpr.whimprflow", account)
         .ok()
@@ -653,6 +708,7 @@ pub fn run() {
             pill_cancel,
             pill_stop,
             pill_start,
+            set_overlay_size,
             get_transforms,
             set_transform_enabled,
             get_snippets,
@@ -668,6 +724,7 @@ pub fn run() {
             add_dictionary_entry,
             remove_dictionary_entry,
             get_status,
+            get_last_error,
             request_microphone,
             request_accessibility,
             request_input_monitoring,

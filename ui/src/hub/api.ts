@@ -158,6 +158,22 @@ export async function getStatus(): Promise<Status> {
   }
 }
 
+// The most recent loud diagnostic from the dictation pipeline (permission
+// missing, hotkey tap dead, paste failed, empty transcript, …). Mirrors
+// `diag::ErrorDto` in src-tauri/src/diag.rs.
+export interface LastError {
+  headline: string;
+  detail: string;
+}
+
+export async function getLastError(): Promise<LastError | null> {
+  try {
+    return await invoke<LastError | null>("get_last_error");
+  } catch {
+    return null;
+  }
+}
+
 export async function getStats(): Promise<StatsSummary> {
   try {
     const tz = new Date().getTimezoneOffset(); // minutes to add to local -> UTC

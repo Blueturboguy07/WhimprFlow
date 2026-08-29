@@ -11,6 +11,7 @@
 
 pub mod asr;
 pub mod cleanup;
+pub mod diagnostics;
 pub mod dictionary;
 pub mod settings;
 pub mod snippets;
@@ -21,6 +22,7 @@ pub mod types;
 
 pub use asr::{AsrEngine, AsrEngineId, Transcript};
 pub use cleanup::{CleanupContext, CleanupLevel, CleanupProvider, ProviderId, VocabEntry};
+pub use diagnostics::{Diagnostic, InjectionFailure, Platform};
 pub use dictionary::{DictSource, DictionaryEntry, DictionaryStore};
 pub use settings::{CleanupMode, PushToTalkKey, Settings};
 pub use snippets::{Snippet, SnippetStore};
