@@ -68,15 +68,63 @@ mod imp {
         macos_accessibility_client::accessibility::application_is_trusted_with_prompt()
     }
 
-    /// Whether microphone access is authorized (so the Hub can show it accurately).
-    pub fn microphone_granted() -> bool {
-        use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaTypeAudio};
+    /// The raw `AVAuthorizationStatus` for the microphone (3 authorized, 2 denied,
+    /// 1 restricted, 0 not yet asked; -1 if AVFoundation didn't hand us the audio
+    /// media type at all).
+    ///
+    /// This asks macOS every single time — measured live, it tracks a TCC change
+    /// inside a running process within a second, no relaunch — so anything stale
+    /// in the Hub is stale on the way to the screen, not here. What it *cannot*
+    /// tell you is that macOS may be answering about a different app entirely;
+    /// that's what [`charged_to`] is for.
+    pub fn microphone_authorization() -> i64 {
+        use objc2_av_foundation::{AVCaptureDevice, AVMediaTypeAudio};
         unsafe {
             let Some(audio) = AVMediaTypeAudio else {
-                return false;
+                return -1;
             };
-            let status = AVCaptureDevice::authorizationStatusForMediaType(audio);
-            status == AVAuthorizationStatus::Authorized
+            AVCaptureDevice::authorizationStatusForMediaType(audio).0 as i64
+        }
+    }
+
+    /// The app macOS holds responsible for what we do — `None` when that's us.
+    ///
+    /// TCC never asks "is this WhimprFlow?". It asks the *responsible process*,
+    /// which is whoever launched us: ourselves when opened from Finder, the
+    /// terminal when started from a shell (which is how a source build gets its
+    /// first run). When it isn't us, every microphone answer macOS gives is about
+    /// that other app, and the reader can flip WhimprFlow's own switch all day
+    /// without moving it. Better to say whose switch counts than to keep
+    /// repeating "not granted".
+    ///
+    /// `responsibility_get_pid_responsible_for_pid` is undocumented, so it's
+    /// looked up at runtime and simply declines to answer if it ever disappears —
+    /// a missing hint is survivable, a missing symbol at launch is not.
+    pub fn charged_to() -> Option<String> {
+        use objc2_app_kit::NSRunningApplication;
+
+        type ResponsibleFor = unsafe extern "C" fn(i32) -> i32;
+        const RTLD_DEFAULT: *mut c_void = -2isize as *mut c_void;
+        extern "C" {
+            fn dlsym(handle: *mut c_void, symbol: *const i8) -> *mut c_void;
+            fn getpid() -> i32;
+        }
+
+        unsafe {
+            let name = c"responsibility_get_pid_responsible_for_pid";
+            let sym = dlsym(RTLD_DEFAULT, name.as_ptr());
+            if sym.is_null() {
+                return None;
+            }
+            let responsible_for: ResponsibleFor = std::mem::transmute(sym);
+            let me = getpid();
+            let responsible = responsible_for(me);
+            if responsible <= 0 || responsible == me {
+                return None;
+            }
+            let app = NSRunningApplication::runningApplicationWithProcessIdentifier(responsible)?;
+            let name = app.localizedName()?.to_string();
+            (!name.is_empty()).then_some(name)
         }
     }
 
@@ -119,8 +167,8 @@ mod imp {
 
 #[cfg(target_os = "macos")]
 pub use imp::{
-    input_monitoring_granted, is_trusted, microphone_granted, paste_text, prompt_accessibility,
-    request_input_monitoring,
+    charged_to, input_monitoring_granted, is_trusted, microphone_authorization, paste_text,
+    prompt_accessibility, request_input_monitoring,
 };
 
 #[cfg(not(target_os = "macos"))]
@@ -138,9 +186,17 @@ pub fn prompt_accessibility() -> bool {
     true
 }
 
+/// Windows has no TCC status to read; treat it as authorized (3) so the Hub's
+/// microphone row matches [`microphone_granted`].
 #[cfg(not(target_os = "macos"))]
-pub fn microphone_granted() -> bool {
-    true
+pub fn microphone_authorization() -> i64 {
+    3
+}
+
+/// Responsible-process attribution is a macOS-only idea — nothing to warn about.
+#[cfg(not(target_os = "macos"))]
+pub fn charged_to() -> Option<String> {
+    None
 }
 
 #[cfg(not(target_os = "macos"))]

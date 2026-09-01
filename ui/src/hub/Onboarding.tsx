@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { font, palette } from "../tokens/values";
 import { theme } from "./theme";
 import {
@@ -107,11 +107,20 @@ export function Onboarding({
   refresh: () => void;
   onEnter: () => void;
 }) {
-  // Poll live so the state flips the moment macOS applies each grant.
+  // A backstop poll. The state actually flips on the heartbeat Rust pushes at
+  // us (`permissions::watch` → `whimpr://permissions`), because this webview
+  // stops running timers the moment it stops rendering — and the reader grants
+  // the microphone from System Settings, i.e. with this window behind or gone.
+  //
+  // Held in a ref so the interval survives re-renders instead of restarting its
+  // clock on each one; keyed on `[refresh]` it was rebuilt every render, and a
+  // poll that keeps resetting its own timer can be starved forever.
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
   useEffect(() => {
-    const id = setInterval(refresh, 1200);
+    const id = setInterval(() => refreshRef.current(), 1200);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, []);
 
   const acc = status.accessibility;
   const mic = status.microphone;
@@ -170,7 +179,11 @@ export function Onboarding({
         <Step
           n={2}
           title="Microphone"
-          detail="Lets WhimprFlow hear what you say."
+          // macOS can be answering about a different app entirely (whatever
+          // launched us), in which case granting WhimprFlow here can never turn
+          // this row green — so say whose switch actually counts rather than
+          // repeating "not granted" at someone doing everything right.
+          detail={status.microphone_hint ?? "Lets WhimprFlow hear what you say."}
           done={mic}
           active={acc && !mic}
           locked={!acc}

@@ -276,7 +276,14 @@ export function SettingsPane({
           <PermRow
             ok={status.microphone}
             label="Microphone"
-            detail={status.microphone ? "granted" : "hears what you say"}
+            // Same honesty as the setup screen: when macOS is judging this as
+            // some other app, say so instead of pointing at a switch that
+            // cannot move this dot.
+            detail={
+              status.microphone
+                ? "granted"
+                : (status.microphone_hint ?? "hears what you say")
+            }
             onClick={() => {
               requestMicrophone();
               setTimeout(refresh, 1000);

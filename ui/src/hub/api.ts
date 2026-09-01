@@ -16,13 +16,38 @@ export interface Settings {
   sound_on_start: boolean;
 }
 
+// Mirrors `permissions::Grant` in src-tauri. A bare boolean couldn't tell
+// "nobody has asked yet" from "asked and turned down" — two states with
+// completely different instructions for the reader.
+export type Grant = "granted" | "not_asked" | "refused";
+
 export interface Status {
   accessibility: boolean;
   microphone: boolean;
   input_monitoring: boolean;
+  microphone_grant: Grant;
+  // The app macOS is actually judging our microphone request as, when that
+  // isn't us (a terminal that launched us, say). Null in the normal case.
+  charged_to: string | null;
+  // One sentence saying why the microphone row can't go green, when there's
+  // something the reader couldn't otherwise have known. Null when there isn't.
+  microphone_hint: string | null;
   has_openai_key: boolean;
   has_anthropic_key: boolean;
 }
+
+// What the Hub falls back to before the first read lands (and in a plain
+// browser preview, where there's no shell to ask).
+export const UNKNOWN_STATUS: Status = {
+  accessibility: false,
+  microphone: false,
+  input_monitoring: false,
+  microphone_grant: "not_asked",
+  charged_to: null,
+  microphone_hint: null,
+  has_openai_key: false,
+  has_anthropic_key: false,
+};
 
 export interface StatsSummary {
   total_words: number;
@@ -84,13 +109,27 @@ export async function getStatus(): Promise<Status> {
   try {
     return await invoke<Status>("get_status");
   } catch {
-    return {
-      accessibility: false,
-      microphone: false,
-      input_monitoring: false,
-      has_openai_key: false,
-      has_anthropic_key: false,
-    };
+    return UNKNOWN_STATUS;
+  }
+}
+
+// The permission heartbeat, pushed from Rust (`permissions::watch`) the moment
+// macOS changes its mind. This is what makes the setup screen's promise —
+// "turns green the moment macOS applies it, no relaunch needed" — true even
+// when the Hub's own timer isn't running, which is exactly when the reader is
+// off in System Settings doing the granting. Payload is the permission half of
+// `Status`; the key fields ride along unchanged.
+export type Permissions = Pick<
+  Status,
+  "accessibility" | "microphone" | "input_monitoring" | "microphone_grant" | "charged_to" | "microphone_hint"
+>;
+
+export async function onPermissions(cb: (p: Permissions) => void): Promise<() => void> {
+  try {
+    const { listen } = await import("@tauri-apps/api/event");
+    return await listen<Permissions>("whimpr://permissions", (e) => cb(e.payload));
+  } catch {
+    return () => {};
   }
 }
 

@@ -12,6 +12,7 @@ mod diag;
 mod hotkey;
 mod local_llm;
 mod paste;
+mod permissions;
 #[cfg(target_os = "windows")]
 mod win;
 
@@ -136,21 +137,33 @@ fn remove_dictionary_entry(correct: String) {
 }
 
 /// Permission + capability status shown in the Hub.
+///
+/// The permission half is a live read every time (see `permissions::snapshot`);
+/// nothing here is remembered between calls. The Hub no longer has to ask for it
+/// on a timer either — `permissions::watch` pushes the same shape at it on
+/// `whimpr://permissions` the moment macOS changes its mind.
 #[derive(Clone, Serialize)]
 struct StatusReport {
     accessibility: bool,
     microphone: bool,
     input_monitoring: bool,
+    microphone_grant: permissions::Grant,
+    charged_to: Option<String>,
+    microphone_hint: Option<String>,
     has_openai_key: bool,
     has_anthropic_key: bool,
 }
 
 #[tauri::command]
 fn get_status() -> StatusReport {
+    let p = permissions::snapshot();
     StatusReport {
-        accessibility: paste::is_trusted(),
-        microphone: paste::microphone_granted(),
-        input_monitoring: paste::input_monitoring_granted(),
+        accessibility: p.accessibility,
+        microphone: p.microphone,
+        input_monitoring: p.input_monitoring,
+        microphone_grant: p.microphone_grant,
+        charged_to: p.charged_to,
+        microphone_hint: p.microphone_hint,
         has_openai_key: has_key("openai_api_key"),
         has_anthropic_key: has_key("anthropic_api_key"),
     }
@@ -268,6 +281,11 @@ pub fn run() {
 
             // Wire the Fn key to the pill via the real state machine.
             hotkey::install(app.handle().clone());
+
+            // Keep the permission rows honest without the Hub having to be awake
+            // to ask. This is what makes the setup screen's promise ("turns green
+            // the moment macOS applies it — no relaunch needed") actually true.
+            permissions::watch(app.handle().clone());
 
             let open = MenuItem::with_id(app, "open", "Open WhimprFlow", true, None::<&str>)?;
             let demo_rec =
