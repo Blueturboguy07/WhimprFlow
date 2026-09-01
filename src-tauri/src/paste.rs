@@ -59,12 +59,10 @@ mod imp {
     /// global Fn CGEventTap (untrusted taps are silently limited to frontmost-only)
     /// and posting the Cmd+V paste into other apps.
     pub fn is_trusted() -> bool {
-        // AXIsProcessTrusted can keep returning the value observed before the
-        // reader changed the switch in System Settings. Ask TCC directly so the
-        // permission watcher sees that change without requiring a relaunch.
-        tcc_preflight("kTCCServiceAccessibility")
-            .map(|answer| answer == 0)
-            .unwrap_or_else(|| unsafe { AXIsProcessTrusted() })
+        // TCCAccessPreflight is a private API and can deny this query when the
+        // caller lacks Apple's private audit-token entitlement, masking an
+        // Accessibility grant that the public process-trust API recognizes.
+        unsafe { AXIsProcessTrusted() }
     }
 
     /// Check Accessibility trust and, if missing, show the native prompt that offers
