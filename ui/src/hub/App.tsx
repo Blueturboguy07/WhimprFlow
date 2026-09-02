@@ -278,7 +278,7 @@ export function App() {
         <main style={{ flex: 1, minWidth: 0, overflowY: "auto" }}>
           <div style={{ padding: "36px 44px", margin: "0 auto", maxWidth: 1120 }}>
             {page === "home" && <Home />}
-            {page === "insights" && <Insights />}
+            {page === "insights" && <Insights settings={settings} />}
             {page === "dictionary" && <DictionaryPane />}
             {page === "settings" && (
               <SettingsPane settings={settings} onChange={update} status={status} refresh={refresh} />

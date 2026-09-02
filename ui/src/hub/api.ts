@@ -14,6 +14,7 @@ export interface Settings {
   openai_base_url: string;
   anthropic_model: string;
   sound_on_start: boolean;
+  common_word_insight: boolean;
 }
 
 // Mirrors `permissions::Grant` in src-tauri. A bare boolean couldn't tell
@@ -60,6 +61,8 @@ export interface StatsSummary {
   day_streak: number;
   time_saved_secs: number;
   last7_words: number[];
+  most_common_word: string | null;
+  most_common_word_count: number;
 }
 
 export const EMPTY_STATS: StatsSummary = {
@@ -73,6 +76,8 @@ export const EMPTY_STATS: StatsSummary = {
   day_streak: 0,
   time_saved_secs: 0,
   last7_words: [0, 0, 0, 0, 0, 0, 0],
+  most_common_word: null,
+  most_common_word_count: 0,
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -82,6 +87,7 @@ export const DEFAULT_SETTINGS: Settings = {
   openai_base_url: "",
   anthropic_model: "claude-haiku-4-5",
   sound_on_start: true,
+  common_word_insight: false,
 };
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {

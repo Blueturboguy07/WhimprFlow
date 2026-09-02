@@ -72,6 +72,9 @@ pub struct StatsSummary {
     pub time_saved_secs: f64,
     /// Words per local day, oldest first; index 6 is today, 0 is six days ago.
     pub last7_words: [u64; 7],
+    /// Most frequently occurring word across all stored transcripts.
+    pub most_common_word: Option<String>,
+    pub most_common_word_count: u64,
 }
 
 /// Count whitespace-delimited words. Matches how the cleanup layer thinks of words.
@@ -192,6 +195,28 @@ impl StatsStore {
             d -= 1;
         }
 
+        // Count normalized words from stored transcripts. Ties resolve
+        // alphabetically so the result is deterministic.
+        use std::collections::HashMap;
+        let mut word_counts: HashMap<String, u64> = HashMap::new();
+        for word in self.sessions.iter().flat_map(|session| session.text.split_whitespace()) {
+            let normalized = word
+                .trim_matches(|character: char| !character.is_alphanumeric() && character != '\'')
+                .to_lowercase();
+            if !normalized.is_empty() {
+                *word_counts.entry(normalized).or_default() += 1;
+            }
+        }
+        let most_common = word_counts.into_iter().max_by(
+            |(word_a, count_a), (word_b, count_b)| {
+                count_a.cmp(count_b).then_with(|| word_b.cmp(word_a))
+            },
+        );
+        let (most_common_word, most_common_word_count) = match most_common {
+            Some((word, count)) => (Some(word), count),
+            None => (None, 0),
+        };
+
         // Time saved: how long these words would take to type at the baseline,
         // minus the time actually spent speaking. Never negative.
         let typed_secs = total_words as f64 / TYPING_WPM_BASELINE * 60.0;
@@ -208,6 +233,8 @@ impl StatsStore {
             day_streak,
             time_saved_secs,
             last7_words,
+            most_common_word,
+            most_common_word_count,
         }
     }
 }

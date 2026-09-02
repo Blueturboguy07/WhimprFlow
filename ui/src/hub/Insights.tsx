@@ -2,7 +2,7 @@ import { useState } from "react";
 import { font } from "../tokens/values";
 import { theme } from "./theme";
 import { Card, PageTitle, useStats } from "./ui";
-import type { StatsSummary } from "./api";
+import type { Settings, StatsSummary } from "./api";
 import { fmtCompact, fmtNum, newsArticles } from "./format";
 
 // ── Semicircular gauge ───────────────────────────────────────────────────────
@@ -212,7 +212,7 @@ function Tabs({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
   );
 }
 
-function UsageTab({ stats }: { stats: StatsSummary }) {
+function UsageTab({ stats, showCommonWord }: { stats: StatsSummary; showCommonWord: boolean }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       {/* Top row — three stat cards */}
@@ -229,6 +229,27 @@ function UsageTab({ stats }: { stats: StatsSummary }) {
           <BigNumber value={fmtCompact(stats.total_words)} />
         </StatCard>
       </div>
+
+      {showCommonWord && (
+        <Card>
+          <div style={{ fontSize: 14, fontWeight: 600, color: theme.textStrong, marginBottom: 12 }}>
+            Most commonly said word
+          </div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
+            <div style={{ fontFamily: font.serif, fontSize: 34, fontWeight: 600, color: theme.accentDeep }}>
+              {stats.most_common_word ? `“${stats.most_common_word}”` : "No words yet"}
+            </div>
+            {stats.most_common_word && (
+              <div style={{ fontSize: 13, color: theme.textMuted }}>
+                said {fmtNum(stats.most_common_word_count)} {stats.most_common_word_count === 1 ? "time" : "times"}
+              </div>
+            )}
+          </div>
+          <div style={{ fontSize: 12, color: theme.textFaint, marginTop: 8 }}>
+            Across all saved transcripts
+          </div>
+        </Card>
+      )}
 
       {/* Bottom row — activity + streak */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 18 }}>
@@ -273,14 +294,18 @@ function VoiceTab() {
   );
 }
 
-export function Insights() {
+export function Insights({ settings }: { settings: Settings }) {
   const stats = useStats();
   const [tab, setTab] = useState<Tab>("usage");
   return (
     <div style={{ maxWidth: 1000 }}>
       <PageTitle>Insights</PageTitle>
       <Tabs tab={tab} onChange={setTab} />
-      {tab === "usage" ? <UsageTab stats={stats} /> : <VoiceTab />}
+      {tab === "usage" ? (
+        <UsageTab stats={stats} showCommonWord={settings.common_word_insight} />
+      ) : (
+        <VoiceTab />
+      )}
     </div>
   );
 }

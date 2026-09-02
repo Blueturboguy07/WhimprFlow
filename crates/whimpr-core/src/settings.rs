@@ -36,6 +36,9 @@ pub struct Settings {
     pub anthropic_model: String,
     /// Play the record-start ping.
     pub sound_on_start: bool,
+    /// Show lifetime word-frequency analysis in Insights.
+    #[serde(default)]
+    pub common_word_insight: bool,
 }
 
 impl Default for Settings {
@@ -47,6 +50,7 @@ impl Default for Settings {
             openai_base_url: String::new(),
             anthropic_model: "claude-haiku-4-5".to_string(),
             sound_on_start: true,
+            common_word_insight: false,
         }
     }
 }

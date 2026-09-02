@@ -255,6 +255,27 @@ export function SettingsPane({
         </div>
       </Card>
 
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: theme.textStrong }}>
+              Most commonly said word
+            </div>
+            <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 2 }}>
+              Show lifetime transcript word frequency in Insights
+            </div>
+          </div>
+          <Segmented
+            options={[
+              { value: "on", label: "On" },
+              { value: "off", label: "Off" },
+            ]}
+            value={settings.common_word_insight ? "on" : "off"}
+            onChange={(v) => onChange({ ...settings, common_word_insight: v === "on" })}
+          />
+        </div>
+      </Card>
+
       <Card>
         <SectionTitle sub="Grant these to WhimprFlow — dots update automatically within a few seconds.">
           Permissions
