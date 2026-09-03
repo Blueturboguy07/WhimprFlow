@@ -103,7 +103,9 @@ mod imp {
     /// Bundle id of the app that was frontmost at record-start = the paste target.
     /// Cleanup uses it to format for the medium (email vs. text vs. chat).
     static TARGET_APP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
-    static CAPTURE: OnceLock<Mutex<Option<whimpr_audio::CaptureHandle>>> = OnceLock::new();
+    static CAPTURE: OnceLock<
+        Mutex<Option<std::sync::mpsc::Receiver<anyhow::Result<whimpr_audio::CaptureHandle>>>>,
+    > = OnceLock::new();
     static ASR: OnceLock<Arc<whimpr_asr::WhisperEngine>> = OnceLock::new();
     static OPENAI: OnceLock<Mutex<Option<whimpr_cleanup::OpenAiProvider>>> = OnceLock::new();
     static ANTHROPIC: OnceLock<Mutex<Option<whimpr_cleanup::AnthropicProvider>>> = OnceLock::new();
@@ -459,30 +461,39 @@ mod imp {
             // Runs off the tap thread so the mic-permission prompt can't stall keys.
             Action::StartCapture { .. } => {
                 let app_thread = app.clone();
+                let (capture_tx, capture_rx) = std::sync::mpsc::channel();
+                *CAPTURE.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(capture_rx);
                 std::thread::spawn(move || {
                     let app_cb = app_thread.clone();
-                    match whimpr_audio::start(move |bars| {
+                    let result = whimpr_audio::start(move |bars| {
                         let _ = app_cb.emit_to(
                             OVERLAY_LABEL,
                             "whimpr://audio/waveform",
                             WavePayload { bars: bars.to_vec() },
                         );
-                    }) {
-                        Ok(handle) => {
-                            *CAPTURE.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(handle);
-                        }
-                        Err(e) => eprintln!("[whimpr] mic capture failed to start: {e}"),
-                    }
+                    });
+                    let _ = capture_tx.send(result);
                 });
             }
             // Stop the mic, transcribe the buffered audio, and advance the machine.
             Action::StopCaptureAndFinalize { session } => {
                 let app2 = app.clone();
-                let handle = CAPTURE.get().and_then(|slot| slot.lock().unwrap().take());
+                let capture = CAPTURE.get().and_then(|slot| slot.lock().unwrap().take());
                 std::thread::spawn(move || {
                     // Whatever happens, return the pill to idle (done -> idle).
                     let finish =
                         || handle_input(Input::Pipeline(PipelineEvent::Committed { session }));
+                    let handle = capture.and_then(|rx| match rx.recv() {
+                        Ok(Ok(handle)) => Some(handle),
+                        Ok(Err(e)) => {
+                            eprintln!("[whimpr] mic capture failed to start: {e}");
+                            None
+                        }
+                        Err(e) => {
+                            eprintln!("[whimpr] mic capture startup ended unexpectedly: {e}");
+                            None
+                        }
+                    });
                     let Some(res) = handle.and_then(|h| h.stop()) else {
                         eprintln!("[whimpr] no audio captured");
                         finish();
@@ -575,10 +586,14 @@ mod imp {
                 });
             }
             Action::DiscardCapture { .. } => {
-                if let Some(slot) = CAPTURE.get() {
-                    if let Some(handle) = slot.lock().unwrap().take() {
-                        let _ = handle.stop();
-                    }
+                if let Some(capture) =
+                    CAPTURE.get().and_then(|slot| slot.lock().unwrap().take())
+                {
+                    std::thread::spawn(move || {
+                        if let Ok(Ok(handle)) = capture.recv() {
+                            let _ = handle.stop();
+                        }
+                    });
                 }
             }
             // The ASR path (StopCaptureAndFinalize) now drives pipeline completion.
