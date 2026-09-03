@@ -79,6 +79,11 @@ mod imp {
         static kCFRunLoopDefaultMode: CFStringRef;
     }
 
+    #[link(name = "AudioToolbox", kind = "framework")]
+    extern "C" {
+        fn AudioServicesPlaySystemSound(sound_id: u32);
+    }
+
     const K_CG_SESSION_EVENT_TAP: u32 = 1;
     const K_CG_HEAD_INSERT: u32 = 0;
     const K_CG_TAP_OPTION_LISTEN_ONLY: u32 = 1;
@@ -598,8 +603,13 @@ mod imp {
             }
             // The ASR path (StopCaptureAndFinalize) now drives pipeline completion.
             Action::RunPipeline { .. } => {}
-            // PlayPing / WarnSessionCap: no-ops for now.
-            _ => {}
+            Action::PlayPing => {
+                if current_settings().sound_on_start {
+                    // macOS' built-in begin-recording sound; playback is asynchronous.
+                    unsafe { AudioServicesPlaySystemSound(1113) };
+                }
+            }
+            Action::WarnSessionCap => {}
         }
     }
 
