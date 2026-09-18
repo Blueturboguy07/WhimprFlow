@@ -7,6 +7,9 @@ use std::time::Duration;
 
 use whimpr_core::cleanup::{build_messages, CleanupContext, CleanupProvider, ProviderId};
 
+pub mod publik;
+pub use publik::{BalanceSnapshot, Provisioned, PublikError, PublikProvider, Wallet};
+
 /// Default OpenAI Chat Completions endpoint.
 const OPENAI_DEFAULT_URL: &str = "https://api.openai.com/v1/chat/completions";
 
@@ -16,7 +19,7 @@ const OPENAI_DEFAULT_URL: &str = "https://api.openai.com/v1/chat/completions";
 /// the cleanup"). The cleaned text is about as long as what was said; ~4
 /// chars/token, doubled for reformatting headroom, and floored so a short
 /// dictation keeps the generous fixed cap it always had.
-fn cleanup_max_tokens(raw: &str, floor: usize) -> usize {
+pub(crate) fn cleanup_max_tokens(raw: &str, floor: usize) -> usize {
     (raw.chars().count() / 2).max(floor)
 }
 
