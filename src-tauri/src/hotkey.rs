@@ -107,6 +107,7 @@ mod imp {
     static ASR: OnceLock<Arc<whimpr_asr::WhisperEngine>> = OnceLock::new();
     static OPENAI: OnceLock<Mutex<Option<whimpr_cleanup::OpenAiProvider>>> = OnceLock::new();
     static ANTHROPIC: OnceLock<Mutex<Option<whimpr_cleanup::AnthropicProvider>>> = OnceLock::new();
+    static PUBLIK: OnceLock<Mutex<Option<whimpr_cleanup::PublikProvider>>> = OnceLock::new();
     static LOCAL: OnceLock<Mutex<Option<crate::local_llm::LocalWorker>>> = OnceLock::new();
     static SETTINGS: OnceLock<Mutex<whimpr_core::Settings>> = OnceLock::new();
     static DICTIONARY: OnceLock<Mutex<whimpr_core::DictionaryStore>> = OnceLock::new();
@@ -303,10 +304,20 @@ mod imp {
         });
         let anthropic = read_anthropic_key()
             .map(|k| whimpr_cleanup::AnthropicProvider::new(k, settings.anthropic_model.clone()));
+        // publik: its own keychain account + the base URL / alias the
+        // provisioning response handed back (never the user's OpenAI slot).
+        let publik = crate::publik::read_key().map(|k| {
+            whimpr_cleanup::PublikProvider::new(
+                k,
+                &whimpr_cleanup::publik::resolve_base_url(&settings.publik_base_url),
+                &settings.publik_model,
+            )
+        });
         eprintln!(
-            "[whimpr] cleanup providers: openai={}, anthropic={}",
+            "[whimpr] cleanup providers: openai={}, anthropic={}, publik={}",
             openai.is_some(),
-            anthropic.is_some()
+            anthropic.is_some(),
+            publik.is_some()
         );
         match OPENAI.get() {
             Some(m) => *m.lock().unwrap() = openai,
@@ -320,12 +331,18 @@ mod imp {
                 let _ = ANTHROPIC.set(Mutex::new(anthropic));
             }
         }
+        match PUBLIK.get() {
+            Some(m) => *m.lock().unwrap() = publik,
+            None => {
+                let _ = PUBLIK.set(Mutex::new(publik));
+            }
+        }
     }
 
     /// Clean a raw transcript per the current settings (mode + level), feeding in the
     /// dictionary vocabulary relevant to this utterance. Falls back to raw whenever
     /// cleanup is off, the provider is unavailable, it errors, or the gates reject it.
-    fn clean_transcript(raw: &str) -> String {
+    fn clean_transcript(app: &AppHandle, raw: &str) -> String {
         let settings = current_settings();
         let level = settings.cleanup_level;
         if matches!(settings.cleanup_mode, CleanupMode::Raw) || level.bypasses_llm() {
@@ -376,11 +393,26 @@ mod imp {
                 .get()
                 .and_then(|m| m.lock().unwrap().as_ref().map(|p| p.cleanup(raw, &ctx)))
                 .or_else(run_local),
+            CleanupMode::Publik => PUBLIK
+                .get()
+                .and_then(|m| m.lock().unwrap().as_ref().map(|p| p.cleanup(raw, &ctx)))
+                .or_else(run_local),
             CleanupMode::Local => run_local(),
             CleanupMode::Raw => None,
         };
         match result {
             Some(Ok(cleaned)) => {
+                // The gateway stamps the charge + remaining balance on every
+                // answer; move the Settings card's balance line without a
+                // second request.
+                if matches!(settings.cleanup_mode, CleanupMode::Publik) {
+                    let snap = PUBLIK
+                        .get()
+                        .and_then(|m| m.lock().unwrap().as_ref().and_then(|p| p.last_balance()));
+                    if let Some(snap) = snap {
+                        crate::publik::set_balance_from_snapshot(app, &snap);
+                    }
+                }
                 // Deterministic safety net: convert any leftover spoken layout cue the
                 // model missed into real line breaks, strip stray code fences, cap blank
                 // lines. Guarantees no "new line"/"new paragraph" word reaches the cursor.
@@ -393,6 +425,12 @@ mod imp {
                 }
             }
             Some(Err(e)) => {
+                // A typed publik outcome (402 / revoked key / unreachable)
+                // decides what the user is told and whether the key survives;
+                // the dictation itself is never blocked — raw is pasted below.
+                if let Some(pe) = e.downcast_ref::<whimpr_cleanup::PublikError>() {
+                    crate::publik::handle_error(app, pe);
+                }
                 eprintln!("[whimpr] cleanup failed ({e}) — pasting raw");
                 raw_out
             }
@@ -530,7 +568,7 @@ mod imp {
                             let raw = t.text;
                             eprintln!("[whimpr] TRANSCRIPT: \"{}\"", raw);
                             // Clean the transcript (cloud LLM if configured), then paste.
-                            let text = clean_transcript(&raw);
+                            let text = clean_transcript(&app2, &raw);
                             if text != raw {
                                 eprintln!("[whimpr] CLEANED:   \"{}\"", text);
                             }
