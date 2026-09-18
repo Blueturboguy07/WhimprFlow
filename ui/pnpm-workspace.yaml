@@ -9,8 +9,5 @@ packages:
 # global pnpm store already has an *unapproved* esbuild cached from some other
 # project — if you hit that, run `pnpm approve-builds --all` once (see the
 # README's Build sections); it's a no-op when not needed.
-allowBuilds:
-  esbuild: set this to true or false
-
 onlyBuiltDependencies:
   - esbuild
