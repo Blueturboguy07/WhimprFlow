@@ -30,6 +30,21 @@ pub const APP_SLUG: &str = "whimprflow";
 /// Version of the in-app disclosure copy (mirrors whimpr-core's constant).
 pub const DISCLOSURE_VERSION: u32 = whimpr_core::PUBLIK_DISCLOSURE_VERSION;
 
+/// The only host a claim / add-credit / top-up link may point at (CONTRACT
+/// §11.4). Anything else is dropped — the app never opens a link the gateway
+/// did not vouch for.
+pub const LINK_HOST_PREFIX: &str = "https://publikhq.com/";
+
+/// Keep a link only when it is on `https://publikhq.com/…`.
+pub fn publik_link(s: Option<&str>) -> Option<String> {
+    let s = s?.trim();
+    if s.starts_with(LINK_HOST_PREFIX) {
+        Some(s.to_string())
+    } else {
+        None
+    }
+}
+
 fn trim_url(s: &str) -> Option<String> {
     let t = s.trim().trim_end_matches('/');
     if t.is_empty() {
@@ -169,7 +184,7 @@ pub fn map_error(status: u16, headers: &reqwest::header::HeaderMap, body: &str) 
                 .unwrap_or("Not enough publik credit for this request.")
                 .to_string(),
             available_micros: err_field(&v, "available_micros").as_i64().unwrap_or(0),
-            top_up_url: err_field(&v, "top_up_url").as_str().map(str::to_string),
+            top_up_url: publik_link(err_field(&v, "top_up_url").as_str()),
             claim_state: err_field(&v, "claim_state").as_str().map(str::to_string),
         },
         401 | 403 if kind == "key_revoked" => PublikError::KeyRevoked {
@@ -412,6 +427,7 @@ pub fn provision(base_url: &str, req: &ProvisionRequest) -> Result<Provisioned, 
     }
     let mut p: Provisioned = resp.json()?;
     p.replay = status == 200 || p.key.is_none();
+    p.claim_url = publik_link(p.claim_url.as_deref());
     Ok(p)
 }
 
@@ -439,9 +455,9 @@ pub fn parse_wallet(v: &serde_json::Value) -> Option<Wallet> {
     Some(Wallet {
         balance_micros,
         claim_state: s("claim_state"),
-        claim_url: s("claim_url"),
-        add_credit_url: s("add_credit_url"),
-        top_up_url: s("top_up_url"),
+        claim_url: publik_link(v["claim_url"].as_str()),
+        add_credit_url: publik_link(v["add_credit_url"].as_str()),
+        top_up_url: publik_link(v["top_up_url"].as_str()),
         week_used_micros: v["week"]["used_micros"].as_i64(),
         week_budget_micros: v["week"]["budget_micros"].as_i64(),
         week_resets_at: v["week"]["resets_at"].as_str().map(str::to_string),
@@ -608,6 +624,28 @@ mod tests {
         alias.insert("x-publik-balance-micros", "7".parse().unwrap());
         assert_eq!(parse_balance_headers(&alias).unwrap().balance_micros, 7);
         assert!(parse_balance_headers(&reqwest::header::HeaderMap::new()).is_none());
+    }
+
+    #[test]
+    fn links_off_publikhq_com_are_dropped() {
+        // CONTRACT §11.4: claim / add-credit / top-up links are always on
+        // https://publikhq.com/…; anything else is dropped, never opened.
+        assert_eq!(publik_link(Some("https://publikhq.com/claim/HK7F-2QWD")).as_deref(), Some("https://publikhq.com/claim/HK7F-2QWD"));
+        assert_eq!(publik_link(Some(" https://publikhq.com/dashboard/api/add ")).as_deref(), Some("https://publikhq.com/dashboard/api/add"));
+        assert_eq!(publik_link(Some("http://publikhq.com/claim/X")), None, "plain http");
+        assert_eq!(publik_link(Some("https://publikhq.com.evil.example/claim/X")), None, "lookalike host");
+        assert_eq!(publik_link(Some("https://evil.example/publikhq.com/")), None);
+        assert_eq!(publik_link(Some("")), None);
+        assert_eq!(publik_link(None), None);
+
+        let h = reqwest::header::HeaderMap::new();
+        match map_error(402, &h, r#"{"error":{"type":"insufficient_credit","message":"m","top_up_url":"https://evil.example/pay"}}"#) {
+            PublikError::InsufficientCredit { top_up_url, .. } => assert_eq!(top_up_url, None),
+            other => panic!("{other:?}"),
+        }
+        let w = parse_wallet(&serde_json::json!({"balance_micros": 1, "claim_url": "https://evil.example/c", "add_credit_url": "https://publikhq.com/dashboard/api/add"})).unwrap();
+        assert_eq!(w.claim_url, None);
+        assert_eq!(w.add_credit_url.as_deref(), Some("https://publikhq.com/dashboard/api/add"));
     }
 
     #[test]
