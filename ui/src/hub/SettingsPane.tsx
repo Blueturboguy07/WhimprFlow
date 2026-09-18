@@ -344,6 +344,7 @@ export function SettingsPane({
   publik,
   refreshPublik,
   setPublik,
+  reloadSettings,
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
@@ -353,6 +354,9 @@ export function SettingsPane({
   // Re-reads the status and (throttled, in Rust) GET /wallet.
   refreshPublik: () => void;
   setPublik: (p: PublikStatus) => void;
+  // Re-reads Settings from Rust after it changed them (provisioning writes
+  // the install id / base URL / model / claim link and selects the mode).
+  reloadSettings: () => Promise<void>;
 }) {
   const [showDisclosure, setShowDisclosure] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -378,9 +382,11 @@ export function SettingsPane({
     setPublikError(null);
     try {
       // The ONE call that provisions: mint (if needed) → keychain → mode = publik.
+      // Rust persisted the mode and the publik fields; re-read rather than
+      // pushing this pane's pre-provisioning copy back over them.
       const p = await publikAcceptDisclosure();
       setPublik(p);
-      onChange({ ...settings, cleanup_mode: "publik", publik_disclosure_version: Math.max(settings.publik_disclosure_version, 1) });
+      await reloadSettings();
       setShowDisclosure(false);
     } catch (e) {
       setPublikError(typeof e === "string" ? e : e instanceof Error ? e.message : "Could not set up publik API.");

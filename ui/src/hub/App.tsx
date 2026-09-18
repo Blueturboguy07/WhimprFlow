@@ -170,22 +170,35 @@ export function App() {
     getPublikStatus().then(setPublik);
   }, []);
 
+  // Rust owns the publik fields of Settings (install id, base URL, model,
+  // claim link) and writes them behind the Hub's back — on provisioning, on a
+  // wallet refresh, on a silent re-mint. Every `onChange` from the Hub sends
+  // the whole Settings object back, so the local copy must be re-read after
+  // any of those, or a later toggle would overwrite them with stale values.
+  const reloadSettings = useCallback(() => getSettings().then(setLocalSettings), []);
+
   // The publik balance line moves the moment a cleanup settles (the gateway
   // stamps the charge on every answer) and on a 402 / revoked key.
   useEffect(() => {
     let stop: (() => void) | undefined;
     let gone = false;
-    void onPublik((p) => setPublik(p)).then((u) => (gone ? u() : (stop = u)));
+    void onPublik((p) => {
+      setPublik(p);
+      void reloadSettings();
+    }).then((u) => (gone ? u() : (stop = u)));
     return () => {
       gone = true;
       stop?.();
     };
-  }, []);
+  }, [reloadSettings]);
 
   // Status + (throttled in Rust) GET /wallet — the Settings pane's open moment.
   const refreshPublik = useCallback(() => {
-    void publikRefreshWallet().then(setPublik);
-  }, []);
+    void publikRefreshWallet().then((p) => {
+      setPublik(p);
+      void reloadSettings();
+    });
+  }, [reloadSettings]);
 
   // The permission heartbeat lives in Rust now (`permissions::watch`) and is
   // pushed here the instant macOS changes its mind. That matters because the
@@ -315,6 +328,7 @@ export function App() {
                 publik={publik}
                 refreshPublik={refreshPublik}
                 setPublik={setPublik}
+                reloadSettings={reloadSettings}
               />
             )}
             {page === "help" && <Help />}
