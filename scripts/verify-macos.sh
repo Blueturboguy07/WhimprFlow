@@ -183,6 +183,17 @@ BINARY="$LAUNCH_COPY/Contents/MacOS/$EXECUTABLE_NAME"
 if [ -z "$EXECUTABLE_NAME" ] || [ ! -x "$BINARY" ]; then
   fail "no executable at Contents/MacOS/${EXECUTABLE_NAME:-<unset>}"
 else
+  # The publik API module is compiled in (its base URL is a string constant).
+  # The app token's value is never grepped or printed — only its presence is
+  # inferred by the Settings card at runtime, not here.
+  if strings "$BINARY" | grep -q "publikhq.com/api/v1"; then
+    pass "publik API module is compiled in"
+  elif [ "$REQUIRE_NOTARIZED" = "1" ]; then
+    fail "publik API module is missing from the binary"
+  else
+    note "publik API module is missing from the binary"
+  fi
+
   "$BINARY" >"$STAGE/run.log" 2>&1 &
   APP_PID=$!
   SETTLED=0

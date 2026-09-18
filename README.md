@@ -21,7 +21,7 @@ Both platforms are build-from-source only for now — there's no signed installe
 
 - **On-device ASR** — Whisper (via `whisper.cpp`), running on the GPU. Ships a small English model by default; larger models are auto-preferred if present.
 - **Local LLM cleanup** — Qwen3-4B-Instruct (via `llama.cpp`) runs as a separate worker process and cleans the transcript: removes fillers, resolves spoken self-corrections ("meet at 2… no wait, 3" → "3"), applies spoken punctuation, and formats lists/paragraphs. Deterministic gates guard against over-editing, with a raw-transcript fallback.
-- **Optional cloud cleanup** — OpenAI (default) / Anthropic, behind one trait. Keys are stored in the OS keychain (macOS Keychain / Windows Credential Manager), **never in a file**.
+- **Optional cloud cleanup** — **publik API** (the built-in cloud option: already set up, priced per use at 50% of the model's published list price, most people spend under $2 a month; a cost + data-path notice is shown the first time you pick it, and nothing is minted or sent before you accept it), or your own OpenAI / Anthropic key, all behind one trait. Local stays the default. Keys are stored in the OS keychain (macOS Keychain / Windows Credential Manager), **never in a file**.
 - **Floating pill UI** — a small always-on-top bar showing idle / recording / processing states.
 - **Personal dictionary + auto-learn** — teach it names and terms; on macOS a post-paste Accessibility observer watches for a one-word correction and learns it automatically (conservative filters to avoid junk). *Auto-learn capture is macOS-only so far.*
 - **Usage stats** — words dictated, words-per-minute, day streak, time saved, 7-day activity, all stored locally.
@@ -41,6 +41,10 @@ src-tauri/           Tauri shell: hotkey/paste/autolearn (macOS), win.rs (Window
 ui/                  React Hub + overlay pill
 docs/                spec, architecture notes, research
 ```
+
+## Releasing (macOS)
+
+A release build needs two things in the environment: a Developer ID identity (see `scripts/build-macos.sh`) and `PUBLIK_APP_TOKEN` — the app token that lets a downloaded copy mint its own publik API key after the user accepts the disclosure. The script refuses a release without either. The token is read at compile time and never printed; `scripts/verify-macos.sh` checks the module is compiled in without touching the value. CI does the same from the `PUBLIK_APP_TOKEN` repository secret on a `v*` tag (`.github/workflows/release.yml`). A dev build (`--skip-notarize`, or `./dev.sh`) may omit the token — publik API then shows "not available in this build" and Local / your own key keep working.
 
 ## Build (macOS)
 
@@ -134,7 +138,7 @@ why it looked like nothing was happening at all). If you still hit this:
 
 - **Not affiliated with, endorsed by, or connected to Wispr Flow or any other product.** WhimprFlow is an independent, from-scratch reimplementation of the dictation workflow, with its own name, branding, colors, strings, and code. No third-party code or assets are included.
 - **Proof of concept.** Rushed, under-tested, and missing plenty (auto-learn is macOS-only and conservative, no installer/notarization/signing pipeline on either OS, error handling is thin). Contributions and fixes welcome.
-- **Privacy.** ASR and default cleanup run on-device. Cloud cleanup is opt-in and only sends the transcript (not audio) to the provider you choose. API keys never touch disk in plaintext.
+- **Privacy.** ASR and default cleanup run on-device. Cloud cleanup is opt-in and only sends the transcript (not audio) to the provider you choose. With publik API your transcript goes through publik's servers to a shared model account; publik never trains on it and does not store it — the same two sentences the app shows before you turn it on. API keys never touch disk in plaintext.
 
 ## License
 

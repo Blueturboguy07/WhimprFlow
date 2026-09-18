@@ -1,0 +1,98 @@
+# Cut a signed, notarized macOS release on a `v*` tag, with the publik app
+# token compiled in from the PUBLIK_APP_TOKEN repository secret.
+#
+# The token is read at compile time (`option_env!("PUBLIK_APP_TOKEN")` in
+# src-tauri/src/publik.rs; src-tauri/build.rs re-runs the build when it
+# changes). It is passed as an environment variable to scripts/build-macos.sh,
+# which refuses a release without it, and is never echoed. A tag build with
+# the secret missing therefore fails loudly instead of shipping a copy that
+# cannot offer publik API.
+#
+# Secrets to set once on the repository (gh secret set <NAME> -R Blueturboguy07/WhimprFlow):
+#   PUBLIK_APP_TOKEN        from scripts/mint-app-token.mts whimprflow in the publik repo
+#   APPLE_CERT_P12_BASE64   Developer ID Application certificate (R5R3ZS54LV), base64 .p12
+#   APPLE_CERT_PASSWORD     the .p12 password
+#   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID   notarytool credentials (app-specific password)
+#
+# Build only via `tauri build` (through scripts/build-macos.sh) — never a bare
+# `cargo build` + manual codesign (that blanks the UI and drops TCC grants).
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install UI dependencies
+        run: pnpm --dir ui install --frozen-lockfile
+
+      - name: Require the publik app token
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+        run: |
+          if [ -z "$PUBLIK_APP_TOKEN" ]; then
+            echo "::error::PUBLIK_APP_TOKEN secret is not set — a release without it cannot offer publik API." >&2
+            exit 1
+          fi
+          echo "publik app token present (value not shown)"
+
+      - name: Import the Developer ID certificate
+        env:
+          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$APPLE_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Build, sign, notarize (scripts/build-macos.sh)
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+          APPLE_SIGNING_IDENTITY: "Developer ID Application: Mann Bellani (R5R3ZS54LV)"
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: scripts/build-macos.sh
+
+      - name: Verify the shipped bundle
+        run: scripts/verify-macos.sh --require-notarized
+
+      - name: Attach the dmg to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/bundle/dmg/*.dmg
+          fail_on_unmatched_files: true
