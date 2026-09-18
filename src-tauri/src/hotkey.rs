@@ -240,6 +240,7 @@ mod imp {
             store.add(correct, mishears, whimpr_core::DictSource::Manual);
             let _ = store.save(&dict_path());
         }
+        refresh_asr_vocabulary();
     }
 
     /// Remove a dictionary entry by spelling and persist.
@@ -250,6 +251,7 @@ mod imp {
                 let _ = store.save(&dict_path());
             }
         }
+        refresh_asr_vocabulary();
     }
 
     /// Add an AUTO-learned entry (from the post-paste correction observer) and persist.
@@ -260,6 +262,7 @@ mod imp {
             store.add(correct, mishears, whimpr_core::DictSource::Auto);
             let _ = store.save(&dict_path());
         }
+        refresh_asr_vocabulary();
     }
 
     /// Aggregated stats for the Hub. `tz_offset_minutes` is the UI's
@@ -530,6 +533,34 @@ mod imp {
 
         if let Some(asr) = ASR.get() {
             asr.set_language(&s.language);
+            asr.set_beam_search(s.noise_robust_asr);
+            // Bias the speech model towards the user's own vocabulary. Until now
+            // the Dictionary only reached cleanup, which meant a mis-heard name
+            // had to be repaired afterwards rather than heard correctly.
+            asr.set_vocabulary(&dictionary_terms());
+        }
+    }
+
+    /// The spellings from the Dictionary, for Whisper's initial prompt.
+    fn dictionary_terms() -> Vec<String> {
+        DICTIONARY
+            .get()
+            .map(|d| {
+                d.lock()
+                    .unwrap()
+                    .entries
+                    .iter()
+                    .map(|e| e.correct.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Re-send the vocabulary to the speech model after the Dictionary changes,
+    /// so a word added now biases the very next dictation.
+    pub fn refresh_asr_vocabulary() {
+        if let Some(asr) = ASR.get() {
+            asr.set_vocabulary(&dictionary_terms());
         }
     }
 

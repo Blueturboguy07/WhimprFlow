@@ -359,6 +359,38 @@ export function SettingsPane({
               ))}
             </select>
           </Row>
+
+          <Row
+            title="Noisy environments"
+            hint="Explores several transcriptions instead of committing to the first guess — better in a café or with people talking nearby, and slower on every dictation."
+          >
+            <Segmented
+              options={[
+                { value: "on", label: "On" },
+                { value: "off", label: "Off" },
+              ]}
+              value={settings.noise_robust_asr ? "on" : "off"}
+              onChange={(v) => onChange({ ...settings, noise_robust_asr: v === "on" })}
+            />
+          </Row>
+        </div>
+
+        <div
+          style={{
+            marginTop: 16,
+            paddingTop: 14,
+            borderTop: `1px solid ${theme.border}`,
+            fontSize: 12.5,
+            color: theme.textMuted,
+            lineHeight: 1.6,
+          }}
+        >
+          <b style={{ color: theme.textStrong }}>For crowded rooms, turn on macOS Voice Isolation.</b>{" "}
+          It uses Apple's on-device model to strip background noise and other
+          people's voices before WhimprFlow ever hears the audio, and it helps far
+          more than anything above. Start a dictation, then open Control Center in
+          the menu bar — a <b>Mic Mode</b> control appears while the microphone is
+          in use — and choose <b>Voice Isolation</b>. macOS remembers it per app.
         </div>
       </Card>
 

@@ -165,6 +165,10 @@ pub struct Settings {
     /// "British spelling, no em dashes, keep sentences short".
     #[serde(default)]
     pub style_instructions: String,
+    /// Use beam search in the speech model instead of greedy decoding. Better in
+    /// a noisy room or with background voices; slower on every dictation.
+    #[serde(default)]
+    pub noise_robust_asr: bool,
 }
 
 fn default_language() -> String {
@@ -200,6 +204,7 @@ impl Default for Settings {
             show_in_dock: true,
             microphone: String::new(),
             style_instructions: String::new(),
+            noise_robust_asr: false,
         }
     }
 }

@@ -31,6 +31,8 @@ export interface Settings {
   microphone: string;
   // Free-text style preferences appended to the cleanup prompt.
   style_instructions: string;
+  // Beam search in the speech model — better in noise, slower.
+  noise_robust_asr: boolean;
 }
 
 export type PushToTalkKey = "fn" | "right_command" | "right_option" | "right_control";
@@ -121,6 +123,7 @@ export const DEFAULT_SETTINGS: Settings = {
   show_in_dock: true,
   microphone: "",
   style_instructions: "",
+  noise_robust_asr: false,
 };
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {

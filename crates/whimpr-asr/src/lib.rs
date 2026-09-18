@@ -14,6 +14,13 @@ pub struct WhisperEngine {
     /// lock so it can be changed from the Hub without reloading the model, which
     /// takes about a second.
     language: RwLock<String>,
+    /// Comma-separated vocabulary fed to Whisper as an `initial_prompt`, which
+    /// biases decoding towards these spellings. Until now the user's Dictionary
+    /// only reached the *cleanup* stage, so a mis-heard name had to be repaired
+    /// after the fact instead of being heard correctly in the first place.
+    vocabulary: RwLock<String>,
+    /// Beam search instead of greedy. Measurably better in noise, and slower.
+    beam_search: RwLock<bool>,
 }
 
 impl WhisperEngine {
@@ -27,7 +34,34 @@ impl WhisperEngine {
         Ok(Self {
             ctx,
             language: RwLock::new("en".to_string()),
+            vocabulary: RwLock::new(String::new()),
+            beam_search: RwLock::new(false),
         })
+    }
+
+    /// Bias decoding towards these spellings (names, jargon, acronyms).
+    pub fn set_vocabulary(&self, terms: &[String]) {
+        // Whisper's initial_prompt is plain text and is capped by the model's
+        // context, so keep it short — a comma list of the words themselves is
+        // what the upstream project recommends for this.
+        // Collects &str borrowed from `terms`; joining produces the owned String.
+        let joined = terms
+            .iter()
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+            .take(60)
+            .collect::<Vec<&str>>()
+            .join(", ");
+        if let Ok(mut g) = self.vocabulary.write() {
+            *g = joined;
+        }
+    }
+
+    /// Trade latency for accuracy in noisy input.
+    pub fn set_beam_search(&self, on: bool) {
+        if let Ok(mut g) = self.beam_search.write() {
+            *g = on;
+        }
     }
 
     /// Set the spoken language. Only has an effect with a multilingual model —
@@ -63,7 +97,25 @@ impl AsrEngine for WhisperEngine {
             .map(|g| g.clone())
             .unwrap_or_else(|_| "en".to_string());
 
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        let vocabulary = self
+            .vocabulary
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default();
+        let beam = self.beam_search.read().map(|g| *g).unwrap_or(false);
+
+        // Beam search explores several hypotheses instead of committing to the
+        // highest-probability token each step. In clean audio the two agree; in
+        // noise, where the top token is often wrong, it recovers materially more.
+        // It costs latency, hence the setting.
+        let mut params = if beam {
+            FullParams::new(SamplingStrategy::BeamSearch {
+                beam_size: 5,
+                patience: -1.0,
+            })
+        } else {
+            FullParams::new(SamplingStrategy::Greedy { best_of: 1 })
+        };
         // `None` puts whisper into auto-detect.
         if language == "auto" {
             params.set_language(None);
@@ -82,6 +134,25 @@ impl AsrEngine for WhisperEngine {
         // producing the sentence twice. Single-segment mode avoids that.
         params.set_single_segment(true);
         params.set_no_context(true);
+
+        // ── Noise robustness ─────────────────────────────────────────────────
+        // Whisper's own fallback mechanism: decode greedily at temperature 0,
+        // and if the result looks degenerate (low average logprob, or high
+        // token entropy — both signatures of the model guessing at noise), retry
+        // at successively higher temperatures. Without an increment there is no
+        // fallback at all and a bad first pass is simply accepted.
+        params.set_temperature(0.0);
+        params.set_temperature_inc(0.2);
+        params.set_entropy_thold(2.4);
+        params.set_logprob_thold(-1.0);
+        // How confident the model must be that a segment is NOT speech before it
+        // is dropped. This is what suppresses background chatter and room noise
+        // in the gaps rather than transcribing it as words.
+        params.set_no_speech_thold(0.6);
+
+        if !vocabulary.is_empty() {
+            params.set_initial_prompt(&vocabulary);
+        }
 
         state
             .full(params, pcm16k)
