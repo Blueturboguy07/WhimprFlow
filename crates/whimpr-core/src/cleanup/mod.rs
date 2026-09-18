@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum ProviderId {
     Local,
+    /// publik API (the pre-provisioned cloud option; Chat Completions dialect).
+    Publik,
     OpenAi,
     Anthropic,
 }
