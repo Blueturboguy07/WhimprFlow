@@ -1,21 +1,34 @@
 import { useEffect, useState } from "react";
-import { font } from "../tokens/values";
+import { font, palette } from "../tokens/values";
 import { theme } from "./theme";
 import { Button, Card, Dot, PageTitle, Segmented } from "./ui";
+import { CloudDisclosure } from "./CloudDisclosure";
 import {
+  publikAcceptDisclosure,
+  publikForgetKey,
+  publikOpenLink,
   requestAccessibility,
   requestInputMonitoring,
   requestMicrophone,
   setApiKey,
   type CleanupLevel,
   type CleanupMode,
+  type PublikStatus,
   type Settings,
   type Status,
 } from "./api";
 
+// Tier 2 (offered, not preselected): Local is the default; "publik API" is the
+// pre-filled cloud option one tap away, with the cost + data-path notice shown
+// the first time it is picked — never at launch.
 const MODES: { value: CleanupMode; label: string; hint: string }[] = [
   { value: "raw", label: "Raw", hint: "Paste exactly what you said" },
   { value: "local", label: "Local", hint: "On-device model (offline)" },
+  {
+    value: "publik",
+    label: "publik API",
+    hint: "Cloud cleanup on your publik balance — priced per use at 50% of the model's published list price; most people spend under $2 a month. Your transcript (never audio) goes through publik's servers to a shared model account; publik never trains on it and does not store it.",
+  },
   { value: "open_ai", label: "OpenAI", hint: "Cloud cleanup via OpenAI (or an OpenAI-compatible API like OpenRouter — set the base URL below)" },
   { value: "anthropic", label: "Anthropic", hint: "Cloud cleanup via Claude" },
 ];
@@ -193,6 +206,106 @@ function KeyField({
   );
 }
 
+// The publik API card under the picker: the balance line from the gateway's
+// headers (live via `whimpr://publik`), the R21 §4.1 states (ready / needs
+// credit / disconnected / unreachable), and the "use my own key" branch.
+function PublikCard({
+  publik,
+  onUseOwnKey,
+  onReconnect,
+  onForget,
+}: {
+  publik: PublikStatus;
+  onUseOwnKey: () => void;
+  onReconnect: () => void;
+  onForget: () => void;
+}) {
+  const [confirmForget, setConfirmForget] = useState(false);
+  const ready = publik.has_key && !publik.exhausted && !publik.disconnected && !publik.unreachable;
+  const anonymous = publik.claim_state !== "claimed";
+  const state = !publik.has_key
+    ? "— not set up"
+    : publik.disconnected
+      ? "— disconnected"
+      : publik.exhausted
+        ? "— needs credit"
+        : publik.unreachable
+          ? "— unreachable"
+          : "— ready";
+  return (
+    <div style={{ marginTop: 16 }}>
+      <div style={{ fontSize: 13, display: "flex", alignItems: "center", flexWrap: "wrap", color: theme.textBody }}>
+        <Dot ok={ready} />
+        <b>publik API</b>&nbsp;{state}
+        {publik.balance_label && <span style={{ marginLeft: 8, color: theme.textMuted }}>· {publik.balance_label}</span>}
+        {publik.week_label && <span style={{ marginLeft: 8, color: theme.textMuted }}>· {publik.week_label}</span>}
+        {publik.last_charge_label && <span style={{ marginLeft: 8, color: theme.textFaint }}>· {publik.last_charge_label}</span>}
+      </div>
+      {publik.has_key && publik.exhausted && (
+        <div style={{ fontSize: 12.5, color: palette.error, marginTop: 6 }}>
+          <b>publik API needs credit.</b>{" "}
+          {anonymous
+            ? "Your free credit is used up. Link this computer to your publik account to add credit, or use your own key."
+            : "$0.00 left. Add credit, or use your own key."}{" "}
+          Dictation still works — text is pasted without cleanup.
+        </div>
+      )}
+      {publik.disconnected && (
+        <div style={{ fontSize: 12.5, color: palette.error, marginTop: 6 }}>
+          <b>publik API is disconnected.</b> This computer was removed from your publik account.
+        </div>
+      )}
+      {publik.has_key && !publik.disconnected && publik.unreachable && (
+        <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 6 }}>
+          <b>publik API is unreachable right now.</b> Nothing is being charged. Try again in a minute, or use your own key.
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+        {publik.disconnected || !publik.has_key ? (
+          <Button size="sm" onClick={onReconnect} disabled={!publik.can_provision}>
+            {publik.disconnected ? "Reconnect" : "Turn on publik API"}
+          </Button>
+        ) : publik.exhausted ? (
+          <Button size="sm" onClick={() => void publikOpenLink("top_up")}>
+            {anonymous ? "Link now" : "Add credit"}
+          </Button>
+        ) : anonymous && publik.claim_url ? (
+          <Button size="sm" onClick={() => void publikOpenLink("claim")}>
+            Link this computer to your publik account
+          </Button>
+        ) : (
+          <Button size="sm" onClick={() => void publikOpenLink("top_up")}>
+            Add credit
+          </Button>
+        )}
+        <Button size="sm" variant="ghost" onClick={() => void publikOpenLink("dashboard")}>
+          Usage
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onUseOwnKey}>
+          Use my own key instead
+        </Button>
+        {publik.has_key &&
+          (confirmForget ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => {
+                setConfirmForget(false);
+                onForget();
+              }}
+            >
+              Really forget this key?
+            </Button>
+          ) : (
+            <Button size="sm" variant="ghost" onClick={() => setConfirmForget(true)}>
+              Forget this key
+            </Button>
+          ))}
+      </div>
+    </div>
+  );
+}
+
 function PermRow({
   ok,
   label,
@@ -228,12 +341,54 @@ export function SettingsPane({
   onChange,
   status,
   refresh,
+  publik,
+  refreshPublik,
+  setPublik,
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
   status: Status;
   refresh: () => void;
+  publik: PublikStatus;
+  // Re-reads the status and (throttled, in Rust) GET /wallet.
+  refreshPublik: () => void;
+  setPublik: (p: PublikStatus) => void;
 }) {
+  const [showDisclosure, setShowDisclosure] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [publikError, setPublikError] = useState<string | null>(null);
+
+  // Opening Settings is the GET /wallet moment (only when a key exists —
+  // Rust decides; a device that never picked publik never phones home).
+  useEffect(() => {
+    refreshPublik();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const useOwnKey = () => {
+    // Switch mode only. The publik key stays for when they come back; nothing
+    // is deleted and the user's own key fields are untouched.
+    setShowDisclosure(false);
+    onChange({ ...settings, cleanup_mode: "open_ai" });
+    setTimeout(() => document.getElementById("byo-keys")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  };
+
+  const accept = async () => {
+    setBusy(true);
+    setPublikError(null);
+    try {
+      // The ONE call that provisions: mint (if needed) → keychain → mode = publik.
+      const p = await publikAcceptDisclosure();
+      setPublik(p);
+      onChange({ ...settings, cleanup_mode: "publik", publik_disclosure_version: Math.max(settings.publik_disclosure_version, 1) });
+      setShowDisclosure(false);
+    } catch (e) {
+      setPublikError(typeof e === "string" ? e : e instanceof Error ? e.message : "Could not set up publik API.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div style={{ maxWidth: 720 }}>
       <PageTitle>Settings</PageTitle>
@@ -243,12 +398,73 @@ export function SettingsPane({
         <Segmented
           options={MODES.map((m) => ({ value: m.value, label: m.label }))}
           value={settings.cleanup_mode}
-          onChange={(v) => onChange({ ...settings, cleanup_mode: v })}
+          onChange={(v) => {
+            // Picking publik the first time (or with no key) shows the
+            // disclosure instead of switching — the mode changes only after
+            // "Turn on publik API".
+            if (v === "publik" && (publik.disclosure_needed || !publik.has_key)) {
+              setPublikError(null);
+              setShowDisclosure(true);
+              return;
+            }
+            setShowDisclosure(false);
+            onChange({ ...settings, cleanup_mode: v });
+          }}
         />
         <div style={{ color: theme.textMuted, fontSize: 12.5, marginTop: 10 }}>
           {MODES.find((m) => m.value === settings.cleanup_mode)?.hint}
         </div>
 
+        {settings.cleanup_mode === "local" && !status.local_model_present && !showDisclosure && (
+          <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 10 }}>
+            Local cleanup needs a model you haven't added yet (see docs/MODELS.md), so text is pasted as spoken.{" "}
+            {publik.available && (
+              <>
+                <a
+                  href="#publik"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setPublikError(null);
+                    setShowDisclosure(true);
+                  }}
+                  style={{ color: theme.accentDeep, fontWeight: 600 }}
+                >
+                  Turn on publik API →
+                </a>{" "}
+                or add your own key below.
+              </>
+            )}
+          </div>
+        )}
+
+        {showDisclosure && (
+          <CloudDisclosure
+            onAccept={() => void accept()}
+            onOwnKey={useOwnKey}
+            onClose={() => setShowDisclosure(false)}
+            busy={busy}
+            error={publikError}
+            canProvision={publik.can_provision || publik.has_key}
+          />
+        )}
+
+        {settings.cleanup_mode === "publik" && !showDisclosure && (
+          <PublikCard
+            publik={publik}
+            onUseOwnKey={useOwnKey}
+            onReconnect={() => {
+              setPublikError(null);
+              setShowDisclosure(true);
+            }}
+            onForget={() => {
+              void publikForgetKey().then(setPublik);
+            }}
+          />
+        )}
+
+        <div id="byo-keys" style={{ marginTop: 22 }}>
+          <SectionTitle sub="Bring your own key — your key, your account, your bill.">Use my own key</SectionTitle>
+        </div>
         <KeyField
           label="OpenAI API key"
           configured={status.has_openai_key}

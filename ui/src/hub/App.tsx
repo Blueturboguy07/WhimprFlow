@@ -15,12 +15,17 @@ import {
   setSettings,
   getStatus,
   getLastError,
+  getPublikStatus,
   onPermissions,
+  onPublik,
+  publikRefreshWallet,
   requestAccessibility,
+  type PublikStatus,
   type Settings,
   type Status,
   type LastError,
   DEFAULT_SETTINGS,
+  UNKNOWN_PUBLIK,
   UNKNOWN_STATUS,
 } from "./api";
 
@@ -133,6 +138,7 @@ export function App() {
   const [status, setStatus] = useState<Status>(UNKNOWN_STATUS);
   const [lastError, setLastError] = useState<LastError | null>(null);
   const [errorDismissed, setErrorDismissed] = useState(false);
+  const [publik, setPublik] = useState<PublikStatus>(UNKNOWN_PUBLIK);
 
   const markEntered = () => {
     try { localStorage.setItem("whimpr_onboarding_done", "1"); } catch { /* ignore */ }
@@ -159,6 +165,26 @@ export function App() {
     getSettings().then(setLocalSettings);
     refresh();
     getLastError().then(setLastError);
+    // Cheap, no network: whether publik is available in this build and
+    // whether a key already exists. The wallet is fetched only from Settings.
+    getPublikStatus().then(setPublik);
+  }, []);
+
+  // The publik balance line moves the moment a cleanup settles (the gateway
+  // stamps the charge on every answer) and on a 402 / revoked key.
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let gone = false;
+    void onPublik((p) => setPublik(p)).then((u) => (gone ? u() : (stop = u)));
+    return () => {
+      gone = true;
+      stop?.();
+    };
+  }, []);
+
+  // Status + (throttled in Rust) GET /wallet — the Settings pane's open moment.
+  const refreshPublik = useCallback(() => {
+    void publikRefreshWallet().then(setPublik);
   }, []);
 
   // The permission heartbeat lives in Rust now (`permissions::watch`) and is
@@ -281,7 +307,15 @@ export function App() {
             {page === "insights" && <Insights />}
             {page === "dictionary" && <DictionaryPane />}
             {page === "settings" && (
-              <SettingsPane settings={settings} onChange={update} status={status} refresh={refresh} />
+              <SettingsPane
+                settings={settings}
+                onChange={update}
+                status={status}
+                refresh={refresh}
+                publik={publik}
+                refreshPublik={refreshPublik}
+                setPublik={setPublik}
+              />
             )}
             {page === "help" && <Help />}
             {soon && <ComingSoon icon={soon.icon} title={soon.title} desc={soon.desc} />}
