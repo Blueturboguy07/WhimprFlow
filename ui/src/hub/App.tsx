@@ -18,8 +18,11 @@ import {
   getPublikStatus,
   onPermissions,
   onPublik,
+  publikDismissNotice,
+  publikOpenLink,
   publikRefreshWallet,
   requestAccessibility,
+  type PublikNotice,
   type PublikStatus,
   type Settings,
   type Status,
@@ -37,6 +40,54 @@ import {
 // src-tauri). Without this, a permission revoked (or a hotkey tap that died)
 // mid-session was previously invisible outside the terminal — see the
 // "text is not writing where the cursor is" bug reports.
+// The publik API banner (CONTRACT §12.3): a 402, or the free starter running
+// low. Non-blocking — dictation goes on, raw text is pasted — with the message
+// from the response and exactly one link (`top_up_url`), resolved in Rust.
+function PublikBanner({ notice, onDismiss }: { notice: PublikNotice; onDismiss: () => void }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 14,
+        padding: "10px 20px",
+        background: theme.accentSoft,
+        borderBottom: `1px solid ${theme.accentSoftBorder}`,
+        fontFamily: font.ui,
+      }}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: palette.slate900 }}>{notice.headline}</span>
+        <span style={{ fontSize: 13, color: theme.textMuted, marginLeft: 8 }}>{notice.message}</span>
+      </div>
+      <button
+        onClick={() => void publikOpenLink("notice")}
+        style={{
+          flex: "0 0 auto",
+          cursor: "pointer",
+          border: "none",
+          borderRadius: 8,
+          padding: "6px 12px",
+          fontSize: 12.5,
+          fontWeight: 600,
+          fontFamily: font.ui,
+          background: theme.accentDeep,
+          color: "#fff",
+        }}
+      >
+        {notice.link_label}
+      </button>
+      <button
+        onClick={onDismiss}
+        aria-label="Dismiss"
+        style={{ flex: "0 0 auto", cursor: "pointer", border: "none", background: "transparent", color: theme.textMuted, fontSize: 16 }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
 function ErrorBanner({
   headline,
   detail,
@@ -312,6 +363,7 @@ export function App() {
           onDismiss={() => setErrorDismissed(true)}
         />
       )}
+      {publik.notice && <PublikBanner notice={publik.notice} onDismiss={() => void publikDismissNotice().then(setPublik)} />}
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
         <Sidebar page={page} setPage={setPage} />
         <main style={{ flex: 1, minWidth: 0, overflowY: "auto" }}>

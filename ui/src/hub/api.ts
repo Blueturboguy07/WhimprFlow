@@ -25,6 +25,8 @@ export interface Settings {
   publik_base_url: string;
   publik_model: string;
   publik_claim_url: string;
+  publik_starter_micros: number;
+  publik_cta_pending: boolean;
 }
 
 // Mirrors `permissions::Grant` in src-tauri. A bare boolean couldn't tell
@@ -106,6 +108,8 @@ export const DEFAULT_SETTINGS: Settings = {
   publik_base_url: "",
   publik_model: "",
   publik_claim_url: "",
+  publik_starter_micros: 0,
+  publik_cta_pending: false,
 };
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -238,6 +242,41 @@ export interface PublikStatus {
   unreachable: boolean;
   disclosure_needed: boolean;
   can_provision: boolean;
+  // The first-run card (CONTRACT §12.1), owed from the moment provisioning
+  // succeeds until "Later" or its primary button. Null once settled.
+  first_run: FirstRunCard | null;
+  // The one justification sentence, read from Rust so every surface agrees.
+  justification: string;
+  // The settings card's primary button (CONTRACT §12.2).
+  plan_cta: PlanCta;
+  // The non-blocking banner: a 402, or the free starter running low.
+  notice: PublikNotice | null;
+}
+
+// Mirrors `publik::FirstRunCard`: balance line from the mint response, the
+// justification, the primary button's label + claim_url, and "Later".
+export interface FirstRunCard {
+  balance_line: string;
+  justification: string;
+  cta_label: string;
+  claim_url: string | null;
+  later_label: string;
+}
+
+// Mirrors `publik::PlanCta`.
+export interface PlanCta {
+  label: string;
+  url: string;
+  claimed: boolean;
+}
+
+// Mirrors `publik::PublikNotice`: the message plus exactly one link.
+export interface PublikNotice {
+  kind: "exhausted" | "low_starter" | string;
+  headline: string;
+  message: string;
+  link_label: string;
+  link_url: string;
 }
 
 export const UNKNOWN_PUBLIK: PublikStatus = {
@@ -257,6 +296,10 @@ export const UNKNOWN_PUBLIK: PublikStatus = {
   unreachable: false,
   disclosure_needed: true,
   can_provision: false,
+  first_run: null,
+  justification: "",
+  plan_cta: { label: "Pick a plan", url: "https://publikhq.com/dashboard/api", claimed: false },
+  notice: null,
 };
 
 export async function getPublikStatus(): Promise<PublikStatus> {
@@ -291,7 +334,30 @@ export async function publikForgetKey(): Promise<PublikStatus> {
   }
 }
 
-export async function publikOpenLink(kind: "claim" | "dashboard" | "terms" | "top_up"): Promise<void> {
+// "Later" on the first-run card (and the primary button, once tapped): the
+// card is settled in Rust. The key and the mode are untouched.
+export async function publikDismissFirstRun(): Promise<PublikStatus> {
+  try {
+    return await invoke<PublikStatus>("publik_dismiss_first_run");
+  } catch {
+    return UNKNOWN_PUBLIK;
+  }
+}
+
+// Close the banner. A later 402 or a new dip raises it again.
+export async function publikDismissNotice(): Promise<PublikStatus> {
+  try {
+    return await invoke<PublikStatus>("publik_dismiss_notice");
+  } catch {
+    return UNKNOWN_PUBLIK;
+  }
+}
+
+// Every kind resolves in Rust to a https://publikhq.com/ link or is refused:
+// the Hub never hands the browser a URL of its own.
+export type PublikLinkKind = "claim" | "dashboard" | "terms" | "top_up" | "first_run" | "plan" | "notice";
+
+export async function publikOpenLink(kind: PublikLinkKind): Promise<void> {
   try {
     await invoke<void>("publik_open_link", { kind });
   } catch {
