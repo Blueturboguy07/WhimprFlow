@@ -222,8 +222,14 @@ Section "guide step 14: Download the speech model"
 if (!(Test-Path "$env:APPDATA\WhimprFlow\models\ggml-base.en.bin")) { curl.exe -f -L -o "$env:APPDATA\WhimprFlow\models\ggml-base.en.bin" https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin }
 Write-Host "MODEL_DOWNLOAD_EXIT=$LASTEXITCODE"
 
-Section "guide step 15: Build the installer -- the exact command both bug reports ran"
+Section "guide step 15: Build the installer -- the exact command both bug reports ran (guide v17 cycle 4: fixed a PowerShell native-arg quoting bug from cycle 3 -- embedded double quotes inside a single-quoted python -c argument get mangled when passed to a native exe; rewritten to a quote-free string-concat style. Cycle 2's WHISPER_DONT_GENERATE_BINDINGS attempt produced stale/incompatible bindings, error E0308, run 35443677950)"
+Write-Host "COMMAND: if (-not `$env:LIBCLANG_PATH) { python -m pip install --quiet libclang==18.1.1; `$env:LIBCLANG_PATH = (python -c '...').Trim() }"
 Write-Host "COMMAND: ui\node_modules\.bin\tauri.CMD build"
+if (-not $env:LIBCLANG_PATH) {
+python -m pip install --quiet libclang==18.1.1
+$env:LIBCLANG_PATH = (python -c "import clang, os; print(os.path.dirname(clang.__file__) + r'\native')").Trim()
+}
+Write-Host "PIP_SIDELOAD_LIBCLANG_PATH=[$env:LIBCLANG_PATH]"
 $buildLog = Join-Path $env:RUNNER_TEMP 'tauri-build.log'
 ui\node_modules\.bin\tauri.CMD build 2>&1 | Tee-Object -FilePath $buildLog
 $tauriExit = $LASTEXITCODE
