@@ -2,30 +2,34 @@
 #
 # WHY THIS EXISTS, next to the earlier script in this folder.
 # The earlier run executed the guide's TERMINAL steps on a stock windows-latest
-# runner. But the GitHub runner image ships LLVM 20.1.8 pre-installed at
-# C:\Program Files\LLVM and on PATH. No consumer Windows machine looks like
-# that: the guide itself has a reader step ("Install LLVM 18") precisely
-# because it assumes LLVM is NOT already there. A `kind: "open"` step renders
-# to nothing in a script, so the earlier run silently substituted the runner's
-# pre-installed LLVM for the step a real reader performs by hand -- and the
-# LLVM/bindgen cause named in report f792b86d was therefore never exercised.
+# runner. But the GitHub runner image ships LLVM pre-installed at
+# C:\Program Files\LLVM and on the machine PATH. No consumer Windows machine
+# looks like that: the guide itself has a reader step ("Install LLVM 18")
+# precisely because it assumes LLVM is NOT already there. A `kind: "open"` step
+# renders to nothing in a script, so the earlier run silently substituted the
+# runner's pre-installed LLVM for the step a real reader performs by hand -- and
+# the LLVM/libclang cause named in report f792b86d was never exercised.
 #
-# This script restores the real starting state (removes the image's LLVM) and
-# then performs guide step 7 the way a reader does, per variant:
+# This script restores a real starting state and then performs guide step 7 the
+# way a reader does, per variant:
 #
-#   no-llvm      the reader skipped the LLVM installer. This is literally what
-#                report f792b86d says they did ("LLVM installer won't co-exist
-#                with another LLVM -> skipped the installer entirely").
-#   step7-default (PRIMARY, carries the oracle verdict) the reader ran
-#                LLVM-18.1.8-win64.exe from the guide's linked release and took
-#                the installer's default options. /S drives NSIS with exactly
-#                the default page values a click-through Next/Next/Install
-#                produces.
-#   step7-path   the reader additionally put LLVM on PATH. Positive control:
-#                if the build only works here, the defect is the guide's step-7
-#                wording, not the app.
+#   no-llvm            the reader never got LLVM onto the machine. Report
+#                      f792b86d says literally this ("LLVM installer won't
+#                      co-exist with another LLVM -> skipped the installer
+#                      entirely").  <-- CARRIES THE ORACLE VERDICT
+#   step7-default      clean the machine of LLVM properly (run the existing
+#                      LLVM's own uninstaller so the registry is clean too),
+#                      then run LLVM-18.1.8-win64.exe from the guide's linked
+#                      release with the installer's default options, then
+#                      rebuild the environment from the registry the way a
+#                      FRESH PowerShell window does.
+#   step7-path         as step7-default, plus explicitly putting LLVM's bin on
+#                      PATH. Positive control.
 #
-# Everything after that is the guide's own Windows steps, verbatim, at the
+# Every installer wait is bounded, and the script says so when it times out,
+# rather than hanging until the job's timeout and producing nothing.
+#
+# Everything after step 7 is the guide's own Windows steps, verbatim, at the
 # pinned sourceCommit, ending in the exact command both bug reports ran.
 #
 # Exit 1 + BUGFIX_LAB_PRESENT  = the guide's build step fails.
@@ -35,12 +39,34 @@ $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
 
 $VARIANT = $env:BUGFIX_VARIANT
-if (-not $VARIANT) { $VARIANT = 'step7-default' }
+if (-not $VARIANT) { $VARIANT = 'no-llvm' }
 $PIN = '44c6d39213e38e7619e6dcfea1184b6619a11d01'
+$INSTALL_TIMEOUT_SECS = 1500
 
 function Section($s) {
   Write-Host ""
   Write-Host "=== $s ==="
+}
+
+function Show-RegistryPath($label) {
+  $m = [Environment]::GetEnvironmentVariable('Path','Machine')
+  $u = [Environment]::GetEnvironmentVariable('Path','User')
+  Write-Host ("REGPATH[$label] MACHINE_LLVM=" + (($m -split ';' | Where-Object { $_ -match 'LLVM' }) -join ' | '))
+  Write-Host ("REGPATH[$label] USER_LLVM=" + (($u -split ';' | Where-Object { $_ -match 'LLVM' }) -join ' | '))
+}
+
+# Run an installer without ever hanging the job.
+function Invoke-Installer($path, $args, $label) {
+  Write-Host "running $label : $path $args"
+  $p = Start-Process -FilePath $path -ArgumentList $args -PassThru
+  $done = $p.WaitForExit($INSTALL_TIMEOUT_SECS * 1000)
+  if (-not $done) {
+    Write-Host "${label}_TIMED_OUT=true after $INSTALL_TIMEOUT_SECS s (the installer never returned)"
+    try { $p.Kill() } catch { }
+    return $false
+  }
+  Write-Host "${label}_EXIT=$($p.ExitCode)"
+  return $true
 }
 
 Write-Host "BUGFIX_LAB_VARIANT=$VARIANT"
@@ -64,27 +90,44 @@ if ($stockClang) {
   Write-Host "STOCK_CLANG_PATH=none"
 }
 Write-Host "STOCK_LIBCLANG_PATH=[$env:LIBCLANG_PATH]"
+Show-RegistryPath "stock"
 
 # --------------------------------------------------------------------------
 # Restore the real starting state of a consumer Windows machine: no LLVM.
 # --------------------------------------------------------------------------
 Section "removing the runner image's pre-installed LLVM (a real user's PC has none)"
-if (Test-Path 'C:\Program Files\LLVM') {
-  Rename-Item -Path 'C:\Program Files\LLVM' -NewName 'LLVM.gh-preinstalled' -Force
-  Write-Host "renamed C:\Program Files\LLVM -> C:\Program Files\LLVM.gh-preinstalled"
-} else {
-  Write-Host "no C:\Program Files\LLVM present"
+
+# For the step7-* variants the removal must be a REAL uninstall, or the LLVM
+# installer sees a registered LLVM and blocks on its co-existence dialog (which
+# is exactly what happened in the previous round, and is its own finding, but
+# confounds the question "what does a clean PC get?").
+if ($VARIANT -ne 'no-llvm') {
+  foreach ($un in @('C:\Program Files\LLVM\Uninstall.exe','C:\Program Files (x86)\LLVM\Uninstall.exe')) {
+    if (Test-Path $un) { Invoke-Installer $un '/S' 'LLVM_UNINSTALL' | Out-Null }
+  }
+  Start-Sleep -Seconds 20
+}
+
+foreach ($dir in @('C:\Program Files\LLVM','C:\Program Files (x86)\LLVM')) {
+  if (Test-Path $dir) {
+    Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+    Write-Host "removed leftover $dir"
+  }
+}
+foreach ($scope in @('Machine','User')) {
+  $v = [Environment]::GetEnvironmentVariable('Path',$scope)
+  if ($v) {
+    $cleaned = (($v -split ';') | Where-Object { $_ -and ($_ -notmatch 'LLVM') }) -join ';'
+    [Environment]::SetEnvironmentVariable('Path',$cleaned,$scope)
+  }
 }
 $env:PATH = (($env:PATH -split ';') | Where-Object { $_ -and ($_ -notmatch 'LLVM') }) -join ';'
 Remove-Item Env:\LIBCLANG_PATH -ErrorAction SilentlyContinue
 
+Show-RegistryPath "after-removal"
 $afterClang = (Get-Command clang -ErrorAction SilentlyContinue)
-if ($afterClang) {
-  Write-Host "CLANG_AFTER_REMOVAL=$($afterClang.Source)"
-  clang --version
-} else {
-  Write-Host "CLANG_AFTER_REMOVAL=none"
-}
+if ($afterClang) { Write-Host "CLANG_AFTER_REMOVAL=$($afterClang.Source)" } else { Write-Host "CLANG_AFTER_REMOVAL=none" }
+Write-Host ("LLVM_DIR_AFTER_REMOVAL_EXISTS=" + (Test-Path 'C:\Program Files\LLVM'))
 Write-Host "LIBCLANG_PATH_AFTER_REMOVAL=[$env:LIBCLANG_PATH]"
 
 # --------------------------------------------------------------------------
@@ -94,44 +137,33 @@ Section "guide step 7 (reader): Install LLVM 18 -- variant $VARIANT"
 $LLVM_URL = 'https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/LLVM-18.1.8-win64.exe'
 
 if ($VARIANT -eq 'no-llvm') {
-  Write-Host "variant no-llvm: reader skipped the LLVM installer (as report f792b86d describes). Nothing installed."
+  Write-Host "variant no-llvm: reader never got LLVM onto the machine (report f792b86d). Nothing installed."
 } else {
   $llvmExe = Join-Path $env:RUNNER_TEMP 'LLVM-18.1.8-win64.exe'
   Write-Host "downloading $LLVM_URL"
   curl.exe -f -L -o $llvmExe $LLVM_URL
-  Write-Host "download exit: $LASTEXITCODE"
-  Write-Host "size: $((Get-Item $llvmExe).Length)"
-  Write-Host "installing with the installer's DEFAULT options (/S drives NSIS with the default page values)"
-  $p = Start-Process -FilePath $llvmExe -ArgumentList '/S' -Wait -PassThru
-  Write-Host "LLVM_INSTALLER_EXIT=$($p.ExitCode)"
-  if (Test-Path 'C:\Program Files\LLVM\bin\clang.exe') {
-    Write-Host "LLVM_INSTALLED_AT=C:\Program Files\LLVM"
-    & 'C:\Program Files\LLVM\bin\clang.exe' --version
-  } else {
-    Write-Host "LLVM_INSTALLED_AT=none (clang.exe not found at the default location)"
-  }
-  if (Test-Path 'C:\Program Files\LLVM\bin\libclang.dll') {
-    Write-Host "LIBCLANG_DLL=C:\Program Files\LLVM\bin\libclang.dll"
-  } else {
-    Write-Host "LIBCLANG_DLL=none"
-  }
+  Write-Host "DOWNLOAD_EXIT=$LASTEXITCODE SIZE=$((Get-Item $llvmExe).Length)"
+  $ok = Invoke-Installer $llvmExe '/S' 'LLVM_INSTALL'
+  Write-Host "LLVM_INSTALL_COMPLETED=$ok"
+  Write-Host ("CLANG_EXE_PRESENT=" + (Test-Path 'C:\Program Files\LLVM\bin\clang.exe'))
+  Write-Host ("LIBCLANG_DLL_PRESENT=" + (Test-Path 'C:\Program Files\LLVM\bin\libclang.dll'))
+  if (Test-Path 'C:\Program Files\LLVM\bin\clang.exe') { & 'C:\Program Files\LLVM\bin\clang.exe' --version }
+  Show-RegistryPath "after-install"
+
+  # A reader opens a NEW PowerShell window after installing (the guide says so
+  # for other installers). Rebuild this process's PATH from the registry the
+  # way a fresh shell does, so the test is not biased by our stale process env.
+  $env:PATH = ([Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User'))
+  Write-Host "rebuilt PATH from the registry, as a fresh PowerShell window would"
 
   if ($VARIANT -eq 'step7-path') {
-    # The diligent reader who ticks "Add LLVM to the system PATH".
     $env:PATH = 'C:\Program Files\LLVM\bin;' + $env:PATH
-    Write-Host "variant step7-path: prepended C:\Program Files\LLVM\bin to PATH"
-  } else {
-    Write-Host "variant step7-default: PATH left exactly as the installer's defaults left it"
+    Write-Host "variant step7-path: additionally prepended C:\Program Files\LLVM\bin"
   }
 }
 
-# Did the installer put clang where the toolchain can see it?
 $postClang = (Get-Command clang -ErrorAction SilentlyContinue)
-if ($postClang) {
-  Write-Host "CLANG_ON_PATH_AFTER_STEP7=$($postClang.Source)"
-} else {
-  Write-Host "CLANG_ON_PATH_AFTER_STEP7=none"
-}
+if ($postClang) { Write-Host "CLANG_ON_PATH_AFTER_STEP7=$($postClang.Source)" } else { Write-Host "CLANG_ON_PATH_AFTER_STEP7=none" }
 Write-Host "LIBCLANG_PATH_AFTER_STEP7=[$env:LIBCLANG_PATH]"
 
 # --------------------------------------------------------------------------
@@ -192,13 +224,8 @@ $installer = $null
 if (Test-Path 'target\release\bundle') {
   $installer = Get-ChildItem -Recurse -Path 'target\release\bundle' -Include *.exe,*.msi -ErrorAction SilentlyContinue | Select-Object -First 1
 }
-if ($installer) {
-  Write-Host "INSTALLER_FOUND=$($installer.FullName)"
-} else {
-  Write-Host "INSTALLER_FOUND=none"
-}
+if ($installer) { Write-Host "INSTALLER_FOUND=$($installer.FullName)" } else { Write-Host "INSTALLER_FOUND=none" }
 
-# Surface the diagnostic lines a reporter would see, for the evidence record.
 if (Test-Path $buildLog) {
   Section "matched failure signatures in the build log"
   $pats = @(
