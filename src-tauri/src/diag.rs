@@ -46,8 +46,16 @@ struct BarPayload {
 #[allow(dead_code)] // used on macOS/Windows; inert-but-present on other targets
 pub fn report(app: &AppHandle, failure: InjectionFailure) {
     let diag = failure.diagnose(PLATFORM);
-    eprintln!("[whimpr] ⚠ {}: {}", diag.headline, diag.detail);
-    let dto = ErrorDto { headline: diag.headline, detail: diag.detail };
+    report_text(app, diag.headline, diag.detail);
+}
+
+/// Same side effects as [`report`] for free-form text — needed where the
+/// message carries runtime data (the publik 402 banner names a claim link,
+/// and `InjectionFailure` is a `Copy` enum that cannot).
+#[allow(dead_code)]
+pub fn report_text(app: &AppHandle, headline: String, detail: String) {
+    eprintln!("[whimpr] ⚠ {headline}: {detail}");
+    let dto = ErrorDto { headline, detail };
     *LAST_ERROR.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(dto.clone());
     let _ = app.emit_to(OVERLAY_LABEL, "whimpr://flowbar/state", BarPayload { state: "error" });
     let _ = app.emit("whimpr://error", dto);
@@ -71,5 +79,23 @@ pub fn last_error() -> Option<ErrorDto> {
 pub fn clear_last_error() {
     if let Some(m) = LAST_ERROR.get() {
         *m.lock().unwrap() = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn last_error_dto_round_trips_without_an_app() {
+        // `report_text` needs an AppHandle for the emits; the remembered half
+        // is what the Hub reads back, so pin that path directly.
+        let dto = ErrorDto { headline: "publik API needs credit".into(), detail: "x".into() };
+        *LAST_ERROR.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(dto.clone());
+        let back = last_error().unwrap();
+        assert_eq!(back.headline, dto.headline);
+        assert_eq!(back.detail, dto.detail);
+        clear_last_error();
+        assert!(last_error().is_none());
     }
 }

@@ -18,7 +18,13 @@ whimpr-ipc = { path = "../crates/whimpr-ipc" }
 whimpr-audio = { path = "../crates/whimpr-audio" }
 whimpr-asr = { path = "../crates/whimpr-asr" }
 whimpr-cleanup = { path = "../crates/whimpr-cleanup" }
-keyring = "3"
+# The platform credential stores are opt-in features in keyring 3. Without them
+# the crate silently selects its in-memory mock (`keyring/src/lib.rs`:
+# `#[cfg(all(target_os = "macos", not(feature = "apple-native")))] pub use mock
+# as default;`), so every key "saved to keychain" vanished at relaunch and the
+# app minted/asked again each launch. These two select the macOS Keychain and
+# the Windows Credential Manager the README has always promised.
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
 strsim = "0.11"
 tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
 serde = { workspace = true }

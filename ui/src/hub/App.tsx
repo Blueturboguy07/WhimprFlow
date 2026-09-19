@@ -15,12 +15,17 @@ import {
   setSettings,
   getStatus,
   getLastError,
+  getPublikStatus,
   onPermissions,
+  onPublik,
+  publikRefreshWallet,
   requestAccessibility,
+  type PublikStatus,
   type Settings,
   type Status,
   type LastError,
   DEFAULT_SETTINGS,
+  UNKNOWN_PUBLIK,
   UNKNOWN_STATUS,
 } from "./api";
 
@@ -133,6 +138,7 @@ export function App() {
   const [status, setStatus] = useState<Status>(UNKNOWN_STATUS);
   const [lastError, setLastError] = useState<LastError | null>(null);
   const [errorDismissed, setErrorDismissed] = useState(false);
+  const [publik, setPublik] = useState<PublikStatus>(UNKNOWN_PUBLIK);
 
   const markEntered = () => {
     try { localStorage.setItem("whimpr_onboarding_done", "1"); } catch { /* ignore */ }
@@ -159,7 +165,40 @@ export function App() {
     getSettings().then(setLocalSettings);
     refresh();
     getLastError().then(setLastError);
+    // Cheap, no network: whether publik is available in this build and
+    // whether a key already exists. The wallet is fetched only from Settings.
+    getPublikStatus().then(setPublik);
   }, []);
+
+  // Rust owns the publik fields of Settings (install id, base URL, model,
+  // claim link) and writes them behind the Hub's back — on provisioning, on a
+  // wallet refresh, on a silent re-mint. Every `onChange` from the Hub sends
+  // the whole Settings object back, so the local copy must be re-read after
+  // any of those, or a later toggle would overwrite them with stale values.
+  const reloadSettings = useCallback(() => getSettings().then(setLocalSettings), []);
+
+  // The publik balance line moves the moment a cleanup settles (the gateway
+  // stamps the charge on every answer) and on a 402 / revoked key.
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let gone = false;
+    void onPublik((p) => {
+      setPublik(p);
+      void reloadSettings();
+    }).then((u) => (gone ? u() : (stop = u)));
+    return () => {
+      gone = true;
+      stop?.();
+    };
+  }, [reloadSettings]);
+
+  // Status + (throttled in Rust) GET /wallet — the Settings pane's open moment.
+  const refreshPublik = useCallback(() => {
+    void publikRefreshWallet().then((p) => {
+      setPublik(p);
+      void reloadSettings();
+    });
+  }, [reloadSettings]);
 
   // The permission heartbeat lives in Rust now (`permissions::watch`) and is
   // pushed here the instant macOS changes its mind. That matters because the
@@ -281,7 +320,16 @@ export function App() {
             {page === "insights" && <Insights />}
             {page === "dictionary" && <DictionaryPane />}
             {page === "settings" && (
-              <SettingsPane settings={settings} onChange={update} status={status} refresh={refresh} />
+              <SettingsPane
+                settings={settings}
+                onChange={update}
+                status={status}
+                refresh={refresh}
+                publik={publik}
+                refreshPublik={refreshPublik}
+                setPublik={setPublik}
+                reloadSettings={reloadSettings}
+              />
             )}
             {page === "help" && <Help />}
             {soon && <ComingSoon icon={soon.icon} title={soon.title} desc={soon.desc} />}

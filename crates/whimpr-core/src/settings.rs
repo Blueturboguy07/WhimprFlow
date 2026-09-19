@@ -16,6 +16,12 @@ pub enum CleanupMode {
     /// Local on-device model (default — works offline, no API key).
     #[default]
     Local,
+    /// publik API — the cloud option that is already set up. Priced per use in
+    /// dollars at 50% of the model's published list price; the key is minted for
+    /// this install and lives in the OS keychain next to the user's own keys.
+    /// Never the default: WhimprFlow is local-first and only goes to the cloud
+    /// when asked.
+    Publik,
     /// OpenAI cloud.
     OpenAi,
     /// Anthropic cloud.
@@ -45,7 +51,34 @@ pub struct Settings {
     /// An empty string disables the hands-free hotkey.
     #[serde(default = "default_hands_free_hotkey")]
     pub hands_free_hotkey: String,
+    /// The version of the publik cost + data-path disclosure the user has
+    /// accepted in this app. 0 = never accepted. Bump
+    /// [`PUBLIK_DISCLOSURE_VERSION`] when the wording changes and the card
+    /// shows again once.
+    #[serde(default)]
+    pub publik_disclosure_version: u32,
+    /// Random v4 UUID minted on first provisioning (not a hardware id). It is
+    /// the idempotency key of `POST /installs`, so a retried provision never
+    /// mints a second key for the same install. Empty until first provision.
+    #[serde(default)]
+    pub publik_install_id: String,
+    /// API root handed back by `POST /installs` (`base_url`). Honoured over the
+    /// compiled default; empty means "use the default". Not a UI field.
+    #[serde(default)]
+    pub publik_base_url: String,
+    /// The fast-tier alias handed back by `POST /installs` (`models.fast`).
+    /// Empty means the compiled default alias. Never an upstream model slug.
+    #[serde(default)]
+    pub publik_model: String,
+    /// Claim link for this install (`claim_url`), kept so the Settings card can
+    /// offer "Link this computer" after a relaunch without a network round trip.
+    /// Empty once claimed or before provisioning.
+    #[serde(default)]
+    pub publik_claim_url: String,
 }
+
+/// Version of the in-app publik disclosure copy. Bumping it re-shows the card.
+pub const PUBLIK_DISCLOSURE_VERSION: u32 = 1;
 
 /// The out-of-the-box hands-free hotkey. Chosen to match what the cofounder
 /// already expected to work ("command-shift space for the hands-off
@@ -65,6 +98,11 @@ impl Default for Settings {
             anthropic_model: "claude-haiku-4-5".to_string(),
             sound_on_start: true,
             hands_free_hotkey: default_hands_free_hotkey(),
+            publik_disclosure_version: 0,
+            publik_install_id: String::new(),
+            publik_base_url: String::new(),
+            publik_model: String::new(),
+            publik_claim_url: String::new(),
         }
     }
 }
@@ -129,5 +167,50 @@ mod tests {
         custom.hands_free_hotkey = "Alt+Space".to_string();
         let back: Settings = serde_json::from_str(&serde_json::to_string(&custom).unwrap()).unwrap();
         assert_eq!(back.hands_free_hotkey, "Alt+Space");
+    }
+
+    #[test]
+    fn publik_fields_survive_old_settings() {
+        // A settings.json written before publik existed must still load, with
+        // Local still selected and nothing provisioned.
+        let old_json = r#"{
+            "cleanup_mode": "local",
+            "cleanup_level": "light",
+            "openai_model": "gpt-4o-mini",
+            "anthropic_model": "claude-haiku-4-5",
+            "sound_on_start": true
+        }"#;
+        let loaded: Settings = serde_json::from_str(old_json).unwrap();
+        assert_eq!(loaded.cleanup_mode, CleanupMode::Local);
+        assert_eq!(loaded.publik_disclosure_version, 0);
+        assert_eq!(loaded.publik_install_id, "");
+        assert_eq!(loaded.publik_base_url, "");
+        assert_eq!(loaded.publik_model, "");
+        assert_eq!(loaded.publik_claim_url, "");
+    }
+
+    #[test]
+    fn publik_mode_round_trips() {
+        let s = Settings {
+            cleanup_mode: CleanupMode::Publik,
+            publik_disclosure_version: PUBLIK_DISCLOSURE_VERSION,
+            publik_install_id: "3f1c9b5e-7a2d-4c8e-9f0b-1d2e3f4a5b6c".to_string(),
+            publik_base_url: "https://publikhq.com/api/v1".to_string(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"cleanup_mode\":\"publik\""), "{json}");
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.cleanup_mode, CleanupMode::Publik);
+        assert_eq!(back.publik_install_id, s.publik_install_id);
+        assert_eq!(back.publik_base_url, s.publik_base_url);
+    }
+
+    #[test]
+    fn local_stays_the_default_even_with_publik_available() {
+        // Tier 2: publik is offered, never preselected. Nothing in this crate
+        // may ever make Publik the default.
+        assert_eq!(CleanupMode::default(), CleanupMode::Local);
+        assert_eq!(Settings::default().cleanup_mode, CleanupMode::Local);
     }
 }

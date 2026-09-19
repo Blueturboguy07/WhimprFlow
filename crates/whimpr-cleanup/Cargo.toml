@@ -6,10 +6,12 @@ rust-version.workspace = true
 license.workspace = true
 
 # Cloud cleanup providers implementing whimpr-core's CleanupProvider trait.
-# OpenAI (default cloud) today; Anthropic and local llama layer in behind the trait.
+# OpenAI (BYO cloud), Anthropic (BYO), and publik API (the pre-provisioned cloud
+# option, `publik.rs`) all sit behind the trait.
 [dependencies]
 whimpr-core = { path = "../whimpr-core" }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }

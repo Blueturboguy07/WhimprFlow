@@ -48,6 +48,7 @@ static CAPTURE: OnceLock<Mutex<Option<whimpr_audio::CaptureHandle>>> = OnceLock:
 static ASR: OnceLock<Arc<whimpr_asr::WhisperEngine>> = OnceLock::new();
 static LOCAL: OnceLock<Mutex<Option<crate::local_llm::LocalWorker>>> = OnceLock::new();
 static OPENAI: OnceLock<Mutex<Option<whimpr_cleanup::OpenAiProvider>>> = OnceLock::new();
+static PUBLIK: OnceLock<Mutex<Option<whimpr_cleanup::PublikProvider>>> = OnceLock::new();
 static SETTINGS: OnceLock<Mutex<whimpr_core::Settings>> = OnceLock::new();
 static DICTIONARY: OnceLock<Mutex<whimpr_core::DictionaryStore>> = OnceLock::new();
 static STATS: OnceLock<Mutex<whimpr_core::StatsStore>> = OnceLock::new();
@@ -200,17 +201,38 @@ fn clean_transcript(raw: &str) -> String {
             .get()
             .and_then(|m| m.lock().unwrap().as_ref().map(|p| p.cleanup(&raw_norm, &ctx)))
             .or_else(run_local),
+        CleanupMode::Publik => PUBLIK
+            .get()
+            .and_then(|m| m.lock().unwrap().as_ref().map(|p| p.cleanup(&raw_norm, &ctx)))
+            .or_else(run_local),
         CleanupMode::Local => run_local(),
         _ => run_local(),
     };
     match result {
         Some(Ok(cleaned)) => {
+            // Same as the macOS arm: the gateway's balance headers move the
+            // Settings card's balance line.
+            if matches!(settings.cleanup_mode, CleanupMode::Publik) {
+                let snap = PUBLIK
+                    .get()
+                    .and_then(|m| m.lock().unwrap().as_ref().and_then(|p| p.last_balance()));
+                if let (Some(snap), Some(app)) = (snap, APP.get()) {
+                    crate::publik::set_balance_from_snapshot(app, &snap);
+                }
+            }
             let cleaned = whimpr_core::cleanup::post_process(&cleaned);
             if whimpr_core::cleanup::evaluate_gates(&raw_out, &cleaned, level).passed() {
                 cleaned
             } else {
                 raw_out
             }
+        }
+        Some(Err(e)) => {
+            if let (Some(pe), Some(app)) = (e.downcast_ref::<whimpr_cleanup::PublikError>(), APP.get()) {
+                crate::publik::handle_error(app, pe);
+            }
+            eprintln!("[whimpr:win] cleanup failed ({e}) — pasting raw");
+            raw_out
         }
         _ => raw_out,
     }
@@ -447,6 +469,19 @@ pub fn rebuild_providers() {
         *slot.lock().unwrap() = key.map(|k| {
             whimpr_cleanup::OpenAiProvider::with_base_url(k, model, Some(base_url))
         });
+    }
+    let publik = crate::publik::read_key().map(|k| {
+        whimpr_cleanup::PublikProvider::new(
+            k,
+            &whimpr_cleanup::publik::resolve_base_url(&settings.publik_base_url),
+            &settings.publik_model,
+        )
+    });
+    match PUBLIK.get() {
+        Some(m) => *m.lock().unwrap() = publik,
+        None => {
+            let _ = PUBLIK.set(Mutex::new(publik));
+        }
     }
 }
 

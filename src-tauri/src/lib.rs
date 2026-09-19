@@ -13,6 +13,7 @@ mod hotkey;
 mod local_llm;
 mod paste;
 mod permissions;
+mod publik;
 #[cfg(target_os = "windows")]
 mod win;
 
@@ -167,6 +168,11 @@ struct StatusReport {
     microphone_hint: Option<String>,
     has_openai_key: bool,
     has_anthropic_key: bool,
+    /// A publik API key is present (env, keychain, or the convention file).
+    has_publik_key: bool,
+    /// The on-device cleanup worker AND a model are on disk — when false,
+    /// "Local" pastes the transcript as spoken and Settings says so.
+    local_model_present: bool,
 }
 
 #[tauri::command]
@@ -181,6 +187,8 @@ fn get_status() -> StatusReport {
         microphone_hint: p.microphone_hint,
         has_openai_key: has_key("openai_api_key"),
         has_anthropic_key: has_key("anthropic_api_key"),
+        has_publik_key: publik::read_key().is_some(),
+        local_model_present: local_llm::worker_bin_path().is_some() && local_llm::model_path().exists(),
     }
 }
 
@@ -191,6 +199,15 @@ fn get_status() -> StatusReport {
 #[tauri::command]
 fn get_last_error() -> Option<diag::ErrorDto> {
     diag::last_error()
+}
+
+/// The keychain account for a BYO provider; anything else is refused.
+fn byo_account(provider: &str) -> Result<&'static str, String> {
+    match provider {
+        "openai" => Ok("openai_api_key"),
+        "anthropic" => Ok("anthropic_api_key"),
+        _ => Err(format!("unknown provider {provider}")),
+    }
 }
 
 fn has_key(account: &str) -> bool {
@@ -240,14 +257,12 @@ fn request_input_monitoring() {
 }
 
 /// Save (or clear, when empty) an API key in the OS keychain, then rebuild providers
-/// so it takes effect immediately.
+/// so it takes effect immediately. Accepts exactly the two BYO providers: no UI
+/// path can write a publik key here or overwrite a user key with one
+/// (`publik::ACCOUNT` is managed only by `publik.rs`).
 #[tauri::command]
 fn set_api_key(provider: String, key: String) -> Result<(), String> {
-    let account = match provider.as_str() {
-        "openai" => "openai_api_key",
-        "anthropic" => "anthropic_api_key",
-        _ => return Err(format!("unknown provider {provider}")),
-    };
+    let account = byo_account(&provider)?;
     let entry =
         keyring::Entry::new("com.whimpr.whimprflow", account).map_err(|e| e.to_string())?;
     let key = key.trim();
@@ -310,7 +325,12 @@ pub fn run() {
             request_microphone,
             request_accessibility,
             request_input_monitoring,
-            set_api_key
+            set_api_key,
+            publik::get_publik_status,
+            publik::publik_refresh_wallet,
+            publik::publik_accept_disclosure,
+            publik::publik_forget_key,
+            publik::publik_open_link
         ])
         .setup(|app| {
             // Regular app: shows in the Dock with a normal, focusable main window.
@@ -368,4 +388,19 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running WhimprFlow");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::byo_account;
+
+    #[test]
+    fn set_api_key_still_rejects_unknown_providers() {
+        // The BYO command accepts exactly openai/anthropic — "publik" is not a
+        // way to write (or clobber) a key through it.
+        assert_eq!(byo_account("openai"), Ok("openai_api_key"));
+        assert_eq!(byo_account("anthropic"), Ok("anthropic_api_key"));
+        assert!(byo_account("publik").is_err());
+        assert!(byo_account("").is_err());
+    }
 }

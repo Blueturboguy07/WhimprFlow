@@ -21,7 +21,7 @@ const TIPS: { emoji: string; title: string; body: string }[] = [
   {
     emoji: "🔑",
     title: "Pick a cleanup engine",
-    body: "Under Settings → Cleanup Engine, run fully offline (Local), paste exactly what you said (Raw), or add an OpenAI / Anthropic key for cloud cleanup. Keys are stored in your macOS keychain.",
+    body: "Under Settings → Cleanup Engine, run fully offline (Local), paste exactly what you said (Raw), or add an OpenAI / Anthropic key for cloud cleanup. publik API is the built-in cloud option — already set up, priced per use at 50% of the model's published list price, with a cost and data-path notice shown before it is turned on. Keys are stored in your macOS keychain.",
   },
 ];
 

@@ -28,6 +28,14 @@
 #                           an app-specific password. Required for Tauri's own
 #                           pass, which cannot read a keychain profile.
 #
+# The publik app token: `PUBLIK_APP_TOKEN` must be in the environment for a
+# release build. It is read at compile time (`option_env!` in
+# src-tauri/src/publik.rs) and is what lets a downloaded copy mint its own
+# publik API key after the user accepts the disclosure. It is an app
+# identifier with abuse limits, not a secret — but a release without it ships
+# a Settings card that says "not available in this build", which is a silent
+# regression of the whole point of the publik option. Never echo its value.
+#
 # Usage: scripts/build-macos.sh [--target <triple>] [--skip-notarize]
 set -euo pipefail
 
@@ -62,6 +70,18 @@ if ! security find-identity -v -p codesigning | grep -qF "$IDENTITY"; then
   echo "No such identity in the keychain: $IDENTITY" >&2
   security find-identity -v -p codesigning >&2
   exit 1
+fi
+
+# Same posture as the Developer-ID check: refuse, do not warn. Dev builds
+# (--skip-notarize) may omit the token; BYO keys and Local keep working.
+if [ -z "${PUBLIK_APP_TOKEN:-}" ] && [ "$SKIP_NOTARIZE" = "0" ]; then
+  echo "Refusing to build a release without PUBLIK_APP_TOKEN in the environment." >&2
+  echo "A release without it cannot offer publik API. Dev builds: pass --skip-notarize." >&2
+  exit 1
+fi
+if [ -n "${PUBLIK_APP_TOKEN:-}" ]; then
+  export PUBLIK_APP_TOKEN
+  echo "==> publik app token present (value not shown)"
 fi
 
 TAURI="$REPO_ROOT/ui/node_modules/.bin/tauri"

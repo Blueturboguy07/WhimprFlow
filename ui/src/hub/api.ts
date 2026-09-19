@@ -2,7 +2,7 @@
 // without the shell) the invoke import fails and we fall back to defaults so the
 // Hub still renders for iteration.
 
-export type CleanupMode = "raw" | "local" | "open_ai" | "anthropic";
+export type CleanupMode = "raw" | "local" | "publik" | "open_ai" | "anthropic";
 export type CleanupLevel = "none" | "light" | "medium" | "high";
 
 export interface Settings {
@@ -18,6 +18,13 @@ export interface Settings {
   // start talking with no key held, again to stop. Default "CmdOrCtrl+Shift+Space".
   // Empty disables it. (Holding Fn and double-tapping Fn always work too.)
   hands_free_hotkey: string;
+  // publik API (the pre-provisioned cloud option). Persisted by Rust; the Hub
+  // never edits these directly — see `publikAcceptDisclosure`.
+  publik_disclosure_version: number;
+  publik_install_id: string;
+  publik_base_url: string;
+  publik_model: string;
+  publik_claim_url: string;
 }
 
 // Mirrors `permissions::Grant` in src-tauri. A bare boolean couldn't tell
@@ -38,6 +45,10 @@ export interface Status {
   microphone_hint: string | null;
   has_openai_key: boolean;
   has_anthropic_key: boolean;
+  has_publik_key: boolean;
+  // The on-device worker AND a model are on disk. When false, "Local" pastes
+  // the transcript as spoken — Settings says so instead of pretending.
+  local_model_present: boolean;
 }
 
 // What the Hub falls back to before the first read lands (and in a plain
@@ -51,6 +62,8 @@ export const UNKNOWN_STATUS: Status = {
   microphone_hint: null,
   has_openai_key: false,
   has_anthropic_key: false,
+  has_publik_key: false,
+  local_model_present: false,
 };
 
 export interface StatsSummary {
@@ -80,13 +93,19 @@ export const EMPTY_STATS: StatsSummary = {
 };
 
 export const DEFAULT_SETTINGS: Settings = {
-  cleanup_mode: "open_ai",
+  // Matches the Rust default (`CleanupMode::Local`): WhimprFlow is local-first.
+  cleanup_mode: "local",
   cleanup_level: "light",
   openai_model: "gpt-4o-mini",
   openai_base_url: "",
   anthropic_model: "claude-haiku-4-5",
   sound_on_start: true,
   hands_free_hotkey: "CmdOrCtrl+Shift+Space",
+  publik_disclosure_version: 0,
+  publik_install_id: "",
+  publik_base_url: "",
+  publik_model: "",
+  publik_claim_url: "",
 };
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
@@ -197,6 +216,96 @@ export async function setApiKey(provider: "openai" | "anthropic", key: string): 
     await invoke<void>("set_api_key", { provider, key });
   } catch {
     /* browser preview */
+  }
+}
+
+// ── publik API ───────────────────────────────────────────────────────────────
+// Mirrors `publik::PublikStatus` in src-tauri/src/publik.rs.
+export interface PublikStatus {
+  available: boolean;
+  has_key: boolean;
+  balance_micros: number | null;
+  balance_label: string | null;
+  last_charge_label: string | null;
+  week_label: string | null;
+  claim_state: string | null;
+  claim_url: string | null;
+  top_up_url: string | null;
+  dashboard_url: string;
+  model: string;
+  exhausted: boolean;
+  disconnected: boolean;
+  unreachable: boolean;
+  disclosure_needed: boolean;
+  can_provision: boolean;
+}
+
+export const UNKNOWN_PUBLIK: PublikStatus = {
+  available: false,
+  has_key: false,
+  balance_micros: null,
+  balance_label: null,
+  last_charge_label: null,
+  week_label: null,
+  claim_state: null,
+  claim_url: null,
+  top_up_url: null,
+  dashboard_url: "https://publikhq.com/dashboard/api",
+  model: "publik-fast",
+  exhausted: false,
+  disconnected: false,
+  unreachable: false,
+  disclosure_needed: true,
+  can_provision: false,
+};
+
+export async function getPublikStatus(): Promise<PublikStatus> {
+  try {
+    return await invoke<PublikStatus>("get_publik_status");
+  } catch {
+    return UNKNOWN_PUBLIK;
+  }
+}
+
+// GET /wallet, throttled in Rust — the Settings pane calls it on open.
+export async function publikRefreshWallet(force = false): Promise<PublikStatus> {
+  try {
+    return await invoke<PublikStatus>("publik_refresh_wallet", { force });
+  } catch {
+    return UNKNOWN_PUBLIK;
+  }
+}
+
+// "Turn on publik API": mints the key if needed (this is the ONE network call
+// that provisions), stamps the disclosure, selects the mode. Errors surface —
+// the card shows them.
+export async function publikAcceptDisclosure(): Promise<PublikStatus> {
+  return invoke<PublikStatus>("publik_accept_disclosure");
+}
+
+export async function publikForgetKey(): Promise<PublikStatus> {
+  try {
+    return await invoke<PublikStatus>("publik_forget_key");
+  } catch {
+    return UNKNOWN_PUBLIK;
+  }
+}
+
+export async function publikOpenLink(kind: "claim" | "dashboard" | "terms" | "top_up"): Promise<void> {
+  try {
+    await invoke<void>("publik_open_link", { kind });
+  } catch {
+    /* browser preview */
+  }
+}
+
+// Pushed from Rust after every cleanup (balance headers) and on 402/401.
+export async function onPublik(cb: (p: PublikStatus) => void): Promise<() => void> {
+  try {
+    const { listen } = await import("@tauri-apps/api/event");
+    return await listen<PublikStatus>("whimpr://publik", (e) => cb(e.payload));
+  } catch {
+    return () => {};
   }
 }
 
