@@ -33,6 +33,28 @@ const APP_TOKEN: Option<&str> = option_env!("PUBLIK_APP_TOKEN");
 /// `GET /wallet` at most this often from the Settings pane.
 const WALLET_REFRESH_SECS: u64 = 30;
 
+// ── The plan CTA and its justification (CONTRACT §12, founder 2026-09-19) ────
+
+/// The one justification for charging, next to every mention of money. Built
+/// from the site's `why-it-costs.ts` sentences — never reworded here, never a
+/// new pricing claim.
+pub const WHY_IT_COSTS: &str = "A provider charges for every request the app makes; publik pays that bill and passes it on at half the provider's list price. Nothing is charged behind your back — usage only draws from a plan or pack you choose to buy.";
+/// The first-run card's primary button (opens `claim_url`).
+pub const CTA_LINK_AND_PICK: &str = "Link this computer & pick a plan";
+/// The settings card's primary button while the key is still anonymous.
+pub const CTA_PICK_PLAN: &str = "Pick a plan";
+/// The settings card's primary button once the computer is claimed.
+pub const CTA_MANAGE_PLAN: &str = "Manage plan";
+/// The first-run card's secondary button: keep the free starter, change nothing.
+pub const CTA_LATER: &str = "Later";
+/// The gateway's documented anonymous starter (CONTRACT §5), used only as the
+/// denominator of the "running low" check when the grant is unknown. The
+/// balance line itself always comes from the response.
+const DOCUMENTED_STARTER_MICROS: i64 = 250_000;
+/// "Running low" = less than a fifth of the starter grant left.
+const LOW_STARTER_NUM: i64 = 1;
+const LOW_STARTER_DEN: i64 = 5;
+
 // ── Key store seam (real keychain in the app, in-memory in tests) ────────────
 
 /// The credential store the shell already uses (the OS keychain), abstracted
@@ -101,6 +123,52 @@ pub struct PublikStatus {
     pub disclosure_needed: bool,
     /// Provisioning is possible in this build (token compiled in).
     pub can_provision: bool,
+    /// The first-run card (CONTRACT §12.1): shown right after provisioning,
+    /// until "Later" or the primary button. `None` once dismissed.
+    pub first_run: Option<FirstRunCard>,
+    /// [`WHY_IT_COSTS`], so every surface reads the same sentence.
+    pub justification: String,
+    /// The settings card's primary button (CONTRACT §12.2).
+    pub plan_cta: PlanCta,
+    /// The non-blocking banner: a 402, or the starter running low. Exactly one link.
+    pub notice: Option<PublikNotice>,
+}
+
+/// What the app shows the moment `POST /installs` has succeeded, in this
+/// order: the balance line, the justification, the primary button, "Later".
+#[derive(Clone, Serialize, Debug, PartialEq, Eq)]
+pub struct FirstRunCard {
+    /// "$0.25 of free starter usage" — from the mint response, never a constant.
+    pub balance_line: String,
+    pub justification: String,
+    /// [`CTA_LINK_AND_PICK`].
+    pub cta_label: String,
+    /// The response's `claim_url` (already dropped unless on publikhq.com).
+    /// `None` = the button falls back to the dashboard, which has a claim box.
+    pub claim_url: Option<String>,
+    /// [`CTA_LATER`].
+    pub later_label: String,
+}
+
+/// The settings card's primary button: label + where it goes.
+#[derive(Clone, Serialize, Debug, PartialEq, Eq, Default)]
+pub struct PlanCta {
+    pub label: String,
+    pub url: String,
+    /// `true` once `claim_state` is `claimed` (the button manages, not picks).
+    pub claimed: bool,
+}
+
+/// A non-blocking banner: the message (from the response where there is one)
+/// and exactly one link.
+#[derive(Clone, Serialize, Debug, PartialEq, Eq)]
+pub struct PublikNotice {
+    /// `exhausted` (402) | `low_starter` (wallet / headers).
+    pub kind: String,
+    pub headline: String,
+    pub message: String,
+    pub link_label: String,
+    pub link_url: String,
 }
 
 static STATE: OnceLock<Mutex<PublikStatus>> = OnceLock::new();
@@ -236,7 +304,86 @@ pub fn adopt_provisioned(store: &dyn KeyStore, settings: &mut Settings, p: &Prov
     }
     settings.publik_claim_url = p.claim_url.clone().unwrap_or_default();
     settings.publik_disclosure_version = PUBLIK_DISCLOSURE_VERSION;
+    settings.publik_starter_micros = p.starter_micros.unwrap_or_else(|| p.starting_balance_micros()).max(0);
+    // The card is now owed (CONTRACT §12.4): cleared only by its own buttons.
+    settings.publik_cta_pending = true;
     Ok(())
+}
+
+// ── The card, the button, the banner (pure, so they are tested) ──────────────
+
+/// "$0.25 of free starter usage".
+pub fn starter_line(micros: i64) -> String {
+    format!("{} of free starter usage", fmt_usd(micros.max(0)))
+}
+
+/// The first-run card from the mint response: balance from the response,
+/// the one justification, the primary button on `claim_url`, "Later".
+pub fn first_run_card(p: &Provisioned) -> FirstRunCard {
+    FirstRunCard {
+        balance_line: starter_line(p.starting_balance_micros()),
+        justification: WHY_IT_COSTS.to_string(),
+        cta_label: CTA_LINK_AND_PICK.to_string(),
+        claim_url: api::publik_link(p.claim_url.as_deref()),
+        later_label: CTA_LATER.to_string(),
+    }
+}
+
+/// The settings card's primary button: "Pick a plan" → `claim_url` while the
+/// key is anonymous; "Manage plan" → the dashboard once claimed. Any link is
+/// checked against publikhq.com again here; the dashboard is the fallback.
+pub fn plan_cta(claim_state: Option<&str>, claim_url: Option<&str>) -> PlanCta {
+    let claimed = claim_state == Some("claimed");
+    if claimed {
+        PlanCta { label: CTA_MANAGE_PLAN.to_string(), url: api::DASHBOARD_URL.to_string(), claimed }
+    } else {
+        PlanCta {
+            label: CTA_PICK_PLAN.to_string(),
+            url: api::publik_link(claim_url).unwrap_or_else(|| api::DASHBOARD_URL.to_string()),
+            claimed,
+        }
+    }
+}
+
+/// Below a fifth of the starter grant left → the banner, with the wallet's
+/// one link. `granted` 0 = unknown, the documented anonymous starter applies.
+pub fn low_starter_notice(remaining: i64, granted: i64, top_up_url: Option<&str>) -> Option<PublikNotice> {
+    let granted = if granted > 0 { granted } else { DOCUMENTED_STARTER_MICROS };
+    if remaining <= 0 || remaining * LOW_STARTER_DEN >= granted * LOW_STARTER_NUM {
+        return None;
+    }
+    let link_url = api::publik_link(top_up_url).unwrap_or_else(|| api::DASHBOARD_URL.to_string());
+    Some(PublikNotice {
+        kind: "low_starter".to_string(),
+        headline: "publik API starter is running low".to_string(),
+        message: format!(
+            "{} of your free starter usage is left. {WHY_IT_COSTS} Pick a plan or a pack to keep cloud cleanup going, or use Local or your own key.",
+            fmt_usd(remaining)
+        ),
+        link_label: "Pick a plan".to_string(),
+        link_url,
+    })
+}
+
+/// The 402 banner: the gateway's message (it already says what the link
+/// does) plus exactly one link, `top_up_url`, then what the app does about it.
+pub fn exhausted_notice(message: &str, claim_state: Option<&str>, link: &str) -> PublikNotice {
+    PublikNotice {
+        kind: "exhausted".to_string(),
+        headline: "publik API needs a plan or a pack".to_string(),
+        message: format!(
+            "{} Dictation still works; text is pasted without cleanup — or use Local or your own key under Settings → Cleanup Engine.",
+            message.trim()
+        ),
+        link_label: if claim_state == Some("claimed") { "Add a plan or pack" } else { "Link this computer & pick a plan" }.to_string(),
+        link_url: api::publik_link(Some(link)).unwrap_or_else(|| api::DASHBOARD_URL.to_string()),
+    }
+}
+
+/// "Later" / the primary button: the card is no longer owed. Touches nothing
+/// else — the key stays where it is, the mode stays what it was.
+pub fn dismiss_first_run_in(settings: &mut Settings) {
+    settings.publik_cta_pending = false;
 }
 
 /// The never-overwrite rule as one function: return the key from rungs 1–3 if
@@ -320,6 +467,10 @@ fn provision_now() -> Result<(), String> {
         s.claim_url = p.claim_url.clone();
         s.claim_state = p.claim_state.clone().or_else(|| Some("anonymous".to_string()));
         set_balance_locked(&mut s, p.starting_balance_micros(), None);
+        // The card (CONTRACT §12.1), with the real balance on it — not the
+        // disclosure sheet the user just accepted.
+        s.first_run = Some(first_run_card(&p));
+        s.notice = None;
         eprintln!("[whimpr] publik install provisioned (starting balance {})", fmt_usd(p.starting_balance_micros()));
     }
     Ok(())
@@ -335,6 +486,26 @@ fn set_balance_locked(s: &mut PublikStatus, micros: i64, charge: Option<i64>) {
     }
     s.exhausted = micros <= 0;
 }
+
+/// Starter below a fifth → raise the banner once per dip (a top-up that lifts
+/// the starter back above the line re-arms it). Never replaces a 402 banner.
+fn note_low_starter_locked(s: &mut PublikStatus, remaining: Option<i64>, granted: i64, top_up_url: Option<&str>) {
+    let Some(remaining) = remaining else { return };
+    let link = top_up_url
+        .map(str::to_string)
+        .or_else(|| s.top_up_url.clone())
+        .or_else(|| if s.claim_state.as_deref() == Some("claimed") { None } else { s.claim_url.clone() });
+    match low_starter_notice(remaining, granted, link.as_deref()) {
+        Some(n) => {
+            let already = LOW_STARTER_SHOWN.swap(true, std::sync::atomic::Ordering::SeqCst);
+            if !already && s.notice.is_none() {
+                s.notice = Some(n);
+            }
+        }
+        None => LOW_STARTER_SHOWN.store(false, std::sync::atomic::Ordering::SeqCst),
+    }
+}
+static LOW_STARTER_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn week_label(used: Option<i64>, budget: Option<i64>) -> Option<String> {
     match (used, budget) {
@@ -361,12 +532,14 @@ pub fn set_balance_from_snapshot(app: &AppHandle, snap: &BalanceSnapshot) {
         }
         s.unreachable = false;
         s.disconnected = false;
+        let granted = crate::hotkey::current_settings().publik_starter_micros;
+        note_low_starter_locked(&mut s, snap.starter_remaining_micros, granted, None);
         s.clone()
     };
     let _ = app.emit("whimpr://publik", dto);
 }
 
-fn apply_wallet(s: &mut PublikStatus, w: &Wallet) {
+fn apply_wallet(s: &mut PublikStatus, w: &Wallet, starter_granted: i64) {
     set_balance_locked(s, w.balance_micros, None);
     s.claim_state = w.claim_state.clone();
     if w.claim_state.as_deref() == Some("claimed") {
@@ -380,6 +553,14 @@ fn apply_wallet(s: &mut PublikStatus, w: &Wallet) {
     s.week_label = week_label(w.week_used_micros, w.week_budget_micros);
     s.unreachable = false;
     s.disconnected = false;
+    if !s.exhausted {
+        if let Some(n) = s.notice.as_ref() {
+            if n.kind == "exhausted" {
+                s.notice = None;
+            }
+        }
+    }
+    note_low_starter_locked(s, w.starter_remaining_micros, starter_granted, s.top_up_url.clone().as_deref());
 }
 
 /// `GET /wallet`, at most once per `WALLET_REFRESH_SECS` unless forced.
@@ -398,9 +579,9 @@ fn refresh_wallet(force: bool) {
     }
     match api::fetch_wallet(&base_url(), &key) {
         Ok(w) => {
-            let mut s = state().lock().unwrap();
-            apply_wallet(&mut s, &w);
             let mut settings = crate::hotkey::current_settings();
+            let mut s = state().lock().unwrap();
+            apply_wallet(&mut s, &w, settings.publik_starter_micros);
             let claim = w.claim_url.clone().unwrap_or_default();
             if w.claim_state.as_deref() == Some("claimed") || (!claim.is_empty() && claim != settings.publik_claim_url) {
                 settings.publik_claim_url = if w.claim_state.as_deref() == Some("claimed") { String::new() } else { claim };
@@ -417,49 +598,32 @@ fn refresh_wallet(force: bool) {
 
 // ── Error handling shared by the dictation pipeline ─────────────────────────
 
-/// The 402 banner: the gateway's message plus exactly one link (the
-/// `top_up_url`), then what the app does about it. Pure, so it is testable.
-pub fn exhausted_notice(message: &str, claim_state: Option<&str>, link: &str) -> (String, String) {
-    let action = if claim_state == Some("claimed") {
-        format!("Add credit: {link}")
-    } else {
-        format!("Link this computer to your publik account to add credit: {link}")
-    };
-    (
-        "publik API needs credit".to_string(),
-        format!("{} {action} — or use Local or your own key under Settings → Cleanup Engine. Dictation still works; text is pasted without cleanup.", message.trim()),
-    )
-}
-
-/// 402 from the gateway: remember it, and put the one link in front of the user.
+/// 402 from the gateway: remember it, and put the message plus its one link in
+/// front of the user as a non-blocking banner (`whimpr://publik`). Dictation
+/// carries on — raw text is pasted, and BYO / Local are untouched.
 fn report_exhausted(app: &AppHandle, message: &str, available_micros: i64, top_up_url: Option<String>, claim_state: Option<String>) {
-    let (link, claim_state) = {
-        let mut s = state().lock().unwrap();
-        set_balance_locked(&mut s, available_micros, None);
-        s.exhausted = true;
-        if claim_state.is_some() {
-            s.claim_state = claim_state.clone();
-        }
-        if top_up_url.is_some() {
-            s.top_up_url = top_up_url.clone();
-        }
-        // The one link: the gateway's top_up_url, else the claim link from
-        // provisioning, else the dashboard.
-        let link = s
-            .top_up_url
-            .clone()
-            .or_else(|| s.claim_url.clone())
-            .or_else(|| {
-                let c = crate::hotkey::current_settings().publik_claim_url;
-                if c.is_empty() { None } else { Some(c) }
-            })
-            .unwrap_or_else(|| api::DASHBOARD_URL.to_string());
-        let dto = s.clone();
-        let _ = app.emit("whimpr://publik", dto);
-        (link, s.claim_state.clone())
-    };
-    let (headline, detail) = exhausted_notice(message, claim_state.as_deref(), &link);
-    crate::diag::report_text(app, headline, detail);
+    let claim_from_settings = crate::hotkey::current_settings().publik_claim_url;
+    let mut s = state().lock().unwrap();
+    set_balance_locked(&mut s, available_micros, None);
+    s.exhausted = true;
+    if claim_state.is_some() {
+        s.claim_state = claim_state.clone();
+    }
+    if top_up_url.is_some() {
+        s.top_up_url = top_up_url.clone();
+    }
+    // The one link: the gateway's top_up_url, else the claim link from
+    // provisioning, else the dashboard.
+    let link = s
+        .top_up_url
+        .clone()
+        .or_else(|| s.claim_url.clone())
+        .or_else(|| if claim_from_settings.is_empty() { None } else { Some(claim_from_settings) })
+        .unwrap_or_else(|| api::DASHBOARD_URL.to_string());
+    let notice = exhausted_notice(message, s.claim_state.as_deref(), &link);
+    eprintln!("[whimpr] ⚠ {}: {}", notice.headline, notice.message);
+    s.notice = Some(notice);
+    let _ = app.emit("whimpr://publik", s.clone());
 }
 
 /// Drop the publik key (only its own account). The next "Turn on" mints again.
@@ -472,6 +636,15 @@ pub fn forget_key() {
     s.last_charge_label = None;
     s.week_label = None;
     s.exhausted = false;
+    // No key, no starter to spend: nothing is owed and nothing is running low.
+    s.first_run = None;
+    s.notice = None;
+    let mut settings = crate::hotkey::current_settings();
+    if settings.publik_cta_pending {
+        dismiss_first_run_in(&mut settings);
+        drop(s);
+        crate::hotkey::update_settings(settings);
+    }
 }
 
 fn note_error(e: &PublikError) {
@@ -570,7 +743,31 @@ fn snapshot() -> PublikStatus {
     if s.claim_url.is_none() && !settings.publik_claim_url.is_empty() && s.claim_state.as_deref() != Some("claimed") {
         s.claim_url = Some(settings.publik_claim_url.clone());
     }
+    s.justification = WHY_IT_COSTS.to_string();
+    s.plan_cta = plan_cta(s.claim_state.as_deref(), s.claim_url.as_deref());
+    // A card still owed from an earlier launch (provisioned, never dismissed):
+    // rebuild it from what was persisted, with the freshest balance known.
+    if s.first_run.is_none() && settings.publik_cta_pending && s.has_key {
+        s.first_run = Some(FirstRunCard {
+            balance_line: starter_line(s.balance_micros.unwrap_or(settings.publik_starter_micros)),
+            justification: WHY_IT_COSTS.to_string(),
+            cta_label: CTA_LINK_AND_PICK.to_string(),
+            claim_url: s.claim_url.clone(),
+            later_label: CTA_LATER.to_string(),
+        });
+    }
+    if !settings.publik_cta_pending {
+        s.first_run = None;
+    }
     s
+}
+
+/// Only ever hand the system browser a publikhq.com link (CONTRACT §11.4).
+fn open_publik_url(url: &str) {
+    match api::publik_link(Some(url)) {
+        Some(u) => open_url(&u),
+        None => eprintln!("[whimpr] refused to open a link off publikhq.com"),
+    }
 }
 
 // ── Tauri commands (registered in lib.rs) ──────────────────────────────────
@@ -620,12 +817,40 @@ pub fn publik_forget_key() -> PublikStatus {
     snapshot()
 }
 
-/// Open the claim page, the usage dashboard, the terms, or the 402's link.
+/// "Later" on the first-run card (and the primary button, once tapped): the
+/// card is no longer owed. The key stays; the mode stays; nothing else moves.
+#[tauri::command]
+pub fn publik_dismiss_first_run() -> PublikStatus {
+    let mut settings = crate::hotkey::current_settings();
+    dismiss_first_run_in(&mut settings);
+    crate::hotkey::update_settings(settings);
+    state().lock().unwrap().first_run = None;
+    snapshot()
+}
+
+/// Close the non-blocking banner. A later 402 or a new dip re-raises it.
+#[tauri::command]
+pub fn publik_dismiss_notice() -> PublikStatus {
+    state().lock().unwrap().notice = None;
+    snapshot()
+}
+
+/// Open the claim page, the plan button's target, the banner's one link, the
+/// usage dashboard, the terms, or the 402's link — publikhq.com only.
 #[tauri::command]
 pub fn publik_open_link(kind: String) {
     let s = snapshot();
     let url = match kind.as_str() {
         "claim" => s.claim_url.clone().unwrap_or_else(|| s.dashboard_url.clone()),
+        // The first-run card's primary button: claim_url, else the dashboard
+        // (which has a claim box). Tapping it settles the card.
+        "first_run" => {
+            let u = s.first_run.as_ref().and_then(|c| c.claim_url.clone()).or_else(|| s.claim_url.clone());
+            let _ = publik_dismiss_first_run();
+            u.unwrap_or_else(|| s.dashboard_url.clone())
+        }
+        "plan" => s.plan_cta.url.clone(),
+        "notice" => s.notice.as_ref().map(|n| n.link_url.clone()).unwrap_or_else(|| s.dashboard_url.clone()),
         "top_up" => s
             .top_up_url
             .clone()
@@ -634,7 +859,7 @@ pub fn publik_open_link(kind: String) {
         "terms" => api::TERMS_URL.to_string(),
         _ => s.dashboard_url.clone(),
     };
-    open_url(&url);
+    open_publik_url(&url);
 }
 
 #[cfg(test)]
@@ -771,22 +996,164 @@ mod tests {
 
     #[test]
     fn the_402_notice_renders_the_message_and_exactly_one_link() {
-        let (head, detail) = exhausted_notice(
-            "Not enough publik credit for this request.",
-            Some("anonymous"),
-            "https://publikhq.com/claim/HK7F-2QWD",
-        );
-        assert_eq!(head, "publik API needs credit");
-        assert!(detail.starts_with("Not enough publik credit for this request."), "{detail}");
-        assert_eq!(detail.matches("http").count(), 1, "{detail}");
-        assert!(detail.contains("https://publikhq.com/claim/HK7F-2QWD"));
-        assert!(detail.contains("Link this computer"));
-        assert!(detail.contains("Dictation still works"));
+        let msg = "Not enough publik credit for this request. Link this computer and pick a plan at the link below, or use your own key.";
+        let n = exhausted_notice(msg, Some("anonymous"), "https://publikhq.com/claim/HK7F-2QWD");
+        assert_eq!(n.kind, "exhausted");
+        assert!(n.message.starts_with(msg), "{}", n.message);
+        // The message carries no URL of its own; the one link is the field.
+        assert_eq!(n.message.matches("http").count(), 0, "{}", n.message);
+        assert_eq!(n.link_url, "https://publikhq.com/claim/HK7F-2QWD");
+        assert_eq!(n.link_label, "Link this computer & pick a plan");
+        assert!(n.message.contains("Dictation still works"));
 
-        let (_, claimed) = exhausted_notice("m", Some("claimed"), "https://publikhq.com/dashboard/api/add");
-        assert_eq!(claimed.matches("http").count(), 1, "{claimed}");
-        assert!(claimed.contains("Add credit: https://publikhq.com/dashboard/api/add"));
-        assert!(!claimed.contains("Link this computer"));
+        let claimed = exhausted_notice("m", Some("claimed"), "https://publikhq.com/dashboard/api/add");
+        assert_eq!(claimed.link_url, "https://publikhq.com/dashboard/api/add");
+        assert_eq!(claimed.link_label, "Add a plan or pack");
+
+        // A 402 whose top_up_url is off publikhq.com is not followed: the
+        // dashboard is the one link instead.
+        let off = exhausted_notice("m", Some("anonymous"), "https://evil.example/claim/HK7F-2QWD");
+        assert_eq!(off.link_url, api::DASHBOARD_URL);
+    }
+
+    // ── CONTRACT §12: the card, the button, the banner ──────────────────────
+
+    #[test]
+    fn the_first_run_card_carries_the_responses_balance_and_claim_url() {
+        let p = minted();
+        let card = first_run_card(&p);
+        // (a) the balance line comes from the response, in dollars.
+        assert_eq!(card.balance_line, "$0.25 of free starter usage");
+        let ten_cents: Provisioned = serde_json::from_str(r#"{"key":"pk_live_x","starter_micros":100000,"claim_url":"https://publikhq.com/claim/AAAA-BBBB"}"#).unwrap();
+        assert_eq!(first_run_card(&ten_cents).balance_line, "$0.10 of free starter usage");
+        // (b) the one justification, verbatim.
+        assert_eq!(card.justification, WHY_IT_COSTS);
+        // (c) the primary button opens the response's claim_url; "Later" keeps the starter.
+        assert_eq!(card.cta_label, "Link this computer & pick a plan");
+        assert_eq!(card.claim_url.as_deref(), Some("https://publikhq.com/claim/HK7F-2QWD"));
+        assert_eq!(card.later_label, "Later");
+        // The card exists as JSON for the Hub with exactly these keys.
+        let json = serde_json::to_value(&card).unwrap();
+        for k in ["balance_line", "justification", "cta_label", "claim_url", "later_label"] {
+            assert!(json.get(k).is_some(), "missing {k}");
+        }
+    }
+
+    #[test]
+    fn links_off_publikhq_com_are_dropped_everywhere() {
+        // The mint's claim_url: dropped by the parser, and dropped again here.
+        let mut p = minted();
+        p.claim_url = Some("https://publikhq.com.evil.example/claim/HK7F-2QWD".to_string());
+        assert_eq!(first_run_card(&p).claim_url, None);
+        p.claim_url = Some("http://publikhq.com/claim/HK7F-2QWD".to_string()); // not https
+        assert_eq!(first_run_card(&p).claim_url, None);
+        p.claim_url = Some("https://publikhq.com/claim/HK7F-2QWD".to_string());
+        assert!(first_run_card(&p).claim_url.is_some());
+
+        // The settings button never points anywhere but publikhq.com.
+        let cta = plan_cta(Some("anonymous"), Some("https://phish.example/claim/HK7F-2QWD"));
+        assert_eq!(cta.url, api::DASHBOARD_URL);
+        assert_eq!(cta.label, "Pick a plan");
+        let cta = plan_cta(Some("anonymous"), Some("https://publikhq.com/claim/HK7F-2QWD"));
+        assert_eq!(cta.url, "https://publikhq.com/claim/HK7F-2QWD");
+        assert!(!cta.claimed);
+        let cta = plan_cta(Some("claimed"), Some("https://publikhq.com/claim/HK7F-2QWD"));
+        assert_eq!(cta.label, "Manage plan");
+        assert_eq!(cta.url, "https://publikhq.com/dashboard/api");
+        assert!(cta.claimed);
+
+        // The low-starter banner's one link, likewise.
+        let n = low_starter_notice(10_000, 250_000, Some("https://not-publik.example/x")).unwrap();
+        assert_eq!(n.link_url, api::DASHBOARD_URL);
+        let n = low_starter_notice(10_000, 250_000, Some("https://publikhq.com/claim/HK7F-2QWD")).unwrap();
+        assert_eq!(n.link_url, "https://publikhq.com/claim/HK7F-2QWD");
+        for u in [cta.url.as_str(), n.link_url.as_str()] {
+            assert!(u.starts_with(api::LINK_HOST_PREFIX), "{u}");
+        }
+    }
+
+    #[test]
+    fn later_keeps_the_key_and_the_mode_and_only_settles_the_card() {
+        let store = MemStore::seeded();
+        let mut settings = Settings::default();
+        let (k, p) = ensure_key_with(None, &store, None, &mut settings, |_| Ok(minted())).unwrap();
+        let card = first_run_card(p.as_ref().unwrap());
+        // Provisioning owes the card and remembers the grant.
+        assert!(settings.publik_cta_pending);
+        assert_eq!(settings.publik_starter_micros, 250_000);
+        assert_eq!(card.claim_url.as_deref(), Some("https://publikhq.com/claim/HK7F-2QWD"));
+
+        let before_store = store.0.borrow().clone();
+        let before_mode = settings.cleanup_mode;
+        let before_claim = settings.publik_claim_url.clone();
+        dismiss_first_run_in(&mut settings);
+
+        // "Later": the card is settled, and that is all that changed.
+        assert!(!settings.publik_cta_pending);
+        assert_eq!(*store.0.borrow(), before_store, "the key store was not touched");
+        assert_eq!(store.get_raw(ACCOUNT).as_deref(), Some(k.as_str()), "the publik key is still there");
+        assert_eq!(settings.cleanup_mode, before_mode);
+        assert_eq!(settings.publik_claim_url, before_claim, "the claim link is kept for the settings button");
+        assert_eq!(settings.publik_starter_micros, 250_000);
+        assert_eq!(settings.publik_disclosure_version, PUBLIK_DISCLOSURE_VERSION);
+    }
+
+    #[test]
+    fn the_starter_banner_appears_below_a_fifth_and_only_then() {
+        // 20% of $0.25 is $0.05: at or above it, nothing; below it, the banner.
+        assert!(low_starter_notice(50_000, 250_000, None).is_none());
+        assert!(low_starter_notice(250_000, 250_000, None).is_none());
+        let n = low_starter_notice(49_999, 250_000, None).unwrap();
+        assert_eq!(n.kind, "low_starter");
+        assert!(n.message.starts_with("$0.05 of your free starter usage is left."), "{}", n.message);
+        assert!(n.message.contains(WHY_IT_COSTS));
+        assert_eq!(n.message.matches("http").count(), 0, "the one link is the field, not the text");
+        assert_eq!(n.link_url, api::DASHBOARD_URL);
+        // Nothing left is the 402's job, not this banner's.
+        assert!(low_starter_notice(0, 250_000, None).is_none());
+        // An unknown grant falls back to the documented anonymous starter.
+        assert!(low_starter_notice(60_000, 0, None).is_none());
+        assert!(low_starter_notice(40_000, 0, None).is_some());
+    }
+
+    /// The copy rule on the CTA surfaces specifically (CONTRACT §12.5): the
+    /// texts the card and banners render are checked as values, not only as
+    /// source lines, and the money words are dollars.
+    #[test]
+    fn cta_copy_says_publik_api_in_dollars_and_never_credits() {
+        let p = minted();
+        let card = first_run_card(&p);
+        let n = exhausted_notice("Not enough publik credit for this request.", Some("anonymous"), "https://publikhq.com/claim/HK7F-2QWD");
+        let low = low_starter_notice(10_000, 250_000, None).unwrap();
+        let pick = plan_cta(Some("anonymous"), None);
+        let manage = plan_cta(Some("claimed"), None);
+        let texts = [
+            card.balance_line.as_str(),
+            card.justification.as_str(),
+            card.cta_label.as_str(),
+            card.later_label.as_str(),
+            n.headline.as_str(),
+            n.message.as_str(),
+            n.link_label.as_str(),
+            low.headline.as_str(),
+            low.message.as_str(),
+            low.link_label.as_str(),
+            pick.label.as_str(),
+            manage.label.as_str(),
+            WHY_IT_COSTS,
+        ];
+        for t in texts {
+            let lower = t.to_ascii_lowercase();
+            assert!(!t.contains("OpenAI API access"), "{t}");
+            assert!(!t.contains("ChatGPT"), "{t}");
+            assert!(!lower.contains("credits"), "'credits' as a unit in: {t}");
+            assert!(!lower.contains("token"), "tokens, not dollars, in: {t}");
+            assert!(!lower.contains("openai") && !lower.contains("anthropic"), "provider named in: {t}");
+            assert!(!lower.contains("publik credits") && !lower.contains("publik api credits"), "{t}");
+        }
+        assert!(card.balance_line.starts_with('$'));
+        assert!(card.justification.contains("half the provider's list price"));
+        assert!(card.justification.contains("Nothing is charged behind your back"));
     }
 
     #[test]
