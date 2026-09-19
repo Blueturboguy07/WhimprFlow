@@ -2,6 +2,12 @@ name: bugfix-lab
 
 on:
   workflow_dispatch:
+  # The REST Actions API is under a secondary rate limit for this account right
+  # now, so `gh workflow run` 403s. A push over the git protocol is not rate
+  # limited, so the oracle can still start a controlled run.
+  push:
+    branches:
+      - fix/whimprflow-windows-build-toolchain
 
 jobs:
   windows-build-toolchain:
