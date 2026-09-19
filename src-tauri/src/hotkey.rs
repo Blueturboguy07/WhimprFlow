@@ -681,11 +681,49 @@ mod imp {
             eprintln!("[whimpr] Accessibility granted — Fn works in every app, paste enabled");
         } else {
             eprintln!(
-                "[whimpr] ⚠ Accessibility NOT granted — Fn only works while WhimprFlow is \
-                 frontmost and paste is disabled. Prompting; grant WhimprFlow under System \
-                 Settings → Privacy & Security → Accessibility (no relaunch needed)."
+                "[whimpr] ⚠ Accessibility NOT granted — clearing any stale TCC entry, \
+                 re-prompting, and opening System Settings → Privacy & Security → \
+                 Accessibility (no relaunch needed)."
             );
-            crate::paste::prompt_accessibility();
+            // Self-heal: `is_trusted()` can stay permanently false even after the
+            // user grants (and re-grants) Accessibility in System Settings, because
+            // `tauri build` ad-hoc-signs every build with a fresh code signature and
+            // a TCC row tied to an OLDER signature never transfers to a new one —
+            // toggling the checkbox then just re-toggles that STALE row and nothing
+            // downstream of `is_trusted()` ever notices, matching the reports
+            // ("reinstalling/re-toggling doesn't fix it"). Clear the stale row for
+            // THIS build's own identifier (read from its own config, not assumed,
+            // so this is correct under whatever bundle id this binary actually
+            // ships under) so the grant the user makes next lands against this
+            // build's real signature, then re-fire the native prompt. Spawned so a
+            // slow tccutil call never delays the rest of startup below.
+            let bundle_id = APP
+                .get()
+                .map(|a| a.config().identifier.clone())
+                .unwrap_or_else(|| "com.whimpr.whimprflow".to_string());
+            std::thread::spawn(move || {
+                match std::process::Command::new("/usr/bin/tccutil")
+                    .args(["reset", "Accessibility", &bundle_id])
+                    .output()
+                {
+                    Ok(out) if out.status.success() => eprintln!(
+                        "[whimpr] tccutil reset done: {}",
+                        String::from_utf8_lossy(&out.stdout).trim()
+                    ),
+                    Ok(out) => eprintln!(
+                        "[whimpr] accessibility self-heal: tccutil exited with {}: {}",
+                        out.status,
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    ),
+                    Err(e) => eprintln!(
+                        "[whimpr] accessibility self-heal: failed to run tccutil: {e}"
+                    ),
+                }
+                crate::paste::prompt_accessibility();
+                crate::open_url(
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+                );
+            });
         }
         // Input Monitoring is NOT the gate for a CGEventTap — kept only as diagnostics.
         eprintln!(
