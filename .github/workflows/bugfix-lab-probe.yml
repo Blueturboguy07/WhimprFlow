@@ -1,0 +1,16 @@
+name: bugfix-lab-probe
+
+on:
+  push:
+    branches:
+      - probe/llvm-path
+
+jobs:
+  llvm-path-probe:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: What does the guide's LLVM installer do to PATH by default?
+        shell: powershell
+        run: .\scripts\bugfix-lab\llvm-path-probe.ps1
