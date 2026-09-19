@@ -58,9 +58,19 @@ function Show-RegistryPath($label) {
 # Run an installer without ever hanging the job.
 function Invoke-Installer($path, $args, $label) {
   Write-Host "running $label : $path $args"
+  # NOTE: do NOT use $p.WaitForExit([int]ms) on a Start-Process -PassThru object.
+  # That object has no cached process handle, so the timed overload returns
+  # false immediately and a naive caller "times out" in milliseconds and kills
+  # the installer. Poll HasExited against a wall clock instead.
   $p = Start-Process -FilePath $path -ArgumentList $args -PassThru
-  $done = $p.WaitForExit($INSTALL_TIMEOUT_SECS * 1000)
-  if (-not $done) {
+  $deadline = (Get-Date).AddSeconds($INSTALL_TIMEOUT_SECS)
+  while ((Get-Date) -lt $deadline) {
+    try { $p.Refresh() } catch { }
+    if ($p.HasExited) { break }
+    Start-Sleep -Seconds 10
+  }
+  try { $p.Refresh() } catch { }
+  if (-not $p.HasExited) {
     Write-Host "${label}_TIMED_OUT=true after $INSTALL_TIMEOUT_SECS s (the installer never returned)"
     try { $p.Kill() } catch { }
     return $false
