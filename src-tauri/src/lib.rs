@@ -330,6 +330,8 @@ pub fn run() {
             publik::publik_refresh_wallet,
             publik::publik_accept_disclosure,
             publik::publik_forget_key,
+            publik::publik_dismiss_first_run,
+            publik::publik_dismiss_notice,
             publik::publik_open_link
         ])
         .setup(|app| {

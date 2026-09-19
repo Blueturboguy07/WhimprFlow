@@ -3,6 +3,7 @@ import { font, palette } from "../tokens/values";
 import { theme } from "./theme";
 import { Button, Card, Dot, PageTitle, Segmented } from "./ui";
 import { CloudDisclosure } from "./CloudDisclosure";
+import { PublikFirstRun } from "./PublikFirstRun";
 import {
   publikAcceptDisclosure,
   publikForgetKey,
@@ -221,6 +222,7 @@ function PublikCard({
   onForget: () => void;
 }) {
   const [confirmForget, setConfirmForget] = useState(false);
+  const [whyOpen, setWhyOpen] = useState(false);
   const ready = publik.has_key && !publik.exhausted && !publik.disconnected && !publik.unreachable;
   const anonymous = publik.claim_state !== "claimed";
   const state = !publik.has_key
@@ -243,10 +245,10 @@ function PublikCard({
       </div>
       {publik.has_key && publik.exhausted && (
         <div style={{ fontSize: 12.5, color: palette.error, marginTop: 6 }}>
-          <b>publik API needs credit.</b>{" "}
+          <b>publik API needs a plan or a pack.</b>{" "}
           {anonymous
-            ? "Your free credit is used up. Link this computer to your publik account to add credit, or use your own key."
-            : "$0.00 left. Add credit, or use your own key."}{" "}
+            ? "Your free starter usage is used up. Link this computer and pick a plan, or use your own key."
+            : "Your plan or pack is used up. Add a plan or a pack, or use your own key."}{" "}
           Dictation still works — text is pasted without cleanup.
         </div>
       )}
@@ -266,16 +268,16 @@ function PublikCard({
             {publik.disconnected ? "Reconnect" : "Turn on publik API"}
           </Button>
         ) : publik.exhausted ? (
-          <Button size="sm" onClick={() => void publikOpenLink("top_up")}>
-            {anonymous ? "Link now" : "Add credit"}
-          </Button>
-        ) : anonymous && publik.claim_url ? (
-          <Button size="sm" onClick={() => void publikOpenLink("claim")}>
-            Link this computer to your publik account
+          // The 402's one link (top_up_url): the claim page while anonymous,
+          // the add-credit page once claimed.
+          <Button size="sm" variant="accent" onClick={() => void publikOpenLink("top_up")}>
+            {anonymous ? "Link this computer & pick a plan" : "Add a plan or pack"}
           </Button>
         ) : (
-          <Button size="sm" onClick={() => void publikOpenLink("top_up")}>
-            Add credit
+          // CONTRACT §12.2: "Pick a plan" → claim_url while anonymous;
+          // "Manage plan" → the dashboard once this computer is claimed.
+          <Button size="sm" variant="accent" onClick={() => void publikOpenLink("plan")}>
+            {publik.plan_cta.label}
           </Button>
         )}
         <Button size="sm" variant="ghost" onClick={() => void publikOpenLink("dashboard")}>
@@ -302,6 +304,21 @@ function PublikCard({
             </Button>
           ))}
       </div>
+      {publik.has_key && publik.justification && (
+        <div style={{ marginTop: 10, fontSize: 12.5 }}>
+          <a
+            href="#why-it-costs"
+            onClick={(e) => {
+              e.preventDefault();
+              setWhyOpen((v) => !v);
+            }}
+            style={{ color: theme.accentDeep, fontWeight: 600 }}
+          >
+            {whyOpen ? "Why it costs money ▾" : "Why it costs money ▸"}
+          </a>
+          {whyOpen && <div style={{ color: theme.textMuted, marginTop: 4, lineHeight: 1.5 }}>{publik.justification}</div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -454,7 +471,13 @@ export function SettingsPane({
           />
         )}
 
-        {settings.cleanup_mode === "publik" && !showDisclosure && (
+        {publik.first_run && !showDisclosure && (
+          // Right after provisioning (and on the next launch if it was never
+          // settled): the balance, why it costs money, and the plan button.
+          <PublikFirstRun card={publik.first_run} onSettled={setPublik} />
+        )}
+
+        {settings.cleanup_mode === "publik" && !showDisclosure && !publik.first_run && (
           <PublikCard
             publik={publik}
             onUseOwnKey={useOwnKey}

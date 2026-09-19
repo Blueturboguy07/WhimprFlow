@@ -75,6 +75,18 @@ pub struct Settings {
     /// Empty once claimed or before provisioning.
     #[serde(default)]
     pub publik_claim_url: String,
+    /// Free starter usage granted by `POST /installs` (`starter_micros`), kept
+    /// so the "starter running low" banner knows what 20% of it is. 0 = unknown
+    /// (the gateway's documented anonymous starter is assumed).
+    #[serde(default)]
+    pub publik_starter_micros: i64,
+    /// The first-run publik card (balance line, why it costs money, "Link this
+    /// computer & pick a plan") is owed to the user: set by provisioning,
+    /// cleared by "Later" or the button. Persisted so an app that quits before
+    /// the card was seen shows it on the next launch (CONTRACT §12.4: never a
+    /// silent starter).
+    #[serde(default)]
+    pub publik_cta_pending: bool,
 }
 
 /// Version of the in-app publik disclosure copy. Bumping it re-shows the card.
@@ -103,6 +115,8 @@ impl Default for Settings {
             publik_base_url: String::new(),
             publik_model: String::new(),
             publik_claim_url: String::new(),
+            publik_starter_micros: 0,
+            publik_cta_pending: false,
         }
     }
 }
@@ -187,6 +201,8 @@ mod tests {
         assert_eq!(loaded.publik_base_url, "");
         assert_eq!(loaded.publik_model, "");
         assert_eq!(loaded.publik_claim_url, "");
+        assert_eq!(loaded.publik_starter_micros, 0);
+        assert!(!loaded.publik_cta_pending, "no card is owed before anything was provisioned");
     }
 
     #[test]
@@ -196,6 +212,8 @@ mod tests {
             publik_disclosure_version: PUBLIK_DISCLOSURE_VERSION,
             publik_install_id: "3f1c9b5e-7a2d-4c8e-9f0b-1d2e3f4a5b6c".to_string(),
             publik_base_url: "https://publikhq.com/api/v1".to_string(),
+            publik_starter_micros: 250_000,
+            publik_cta_pending: true,
             ..Default::default()
         };
         let json = serde_json::to_string(&s).unwrap();
@@ -204,6 +222,8 @@ mod tests {
         assert_eq!(back.cleanup_mode, CleanupMode::Publik);
         assert_eq!(back.publik_install_id, s.publik_install_id);
         assert_eq!(back.publik_base_url, s.publik_base_url);
+        assert_eq!(back.publik_starter_micros, 250_000);
+        assert!(back.publik_cta_pending, "the owed first-run card survives a relaunch");
     }
 
     #[test]
