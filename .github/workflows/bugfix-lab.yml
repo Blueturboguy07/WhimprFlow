@@ -1,0 +1,15 @@
+name: bugfix-lab
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-build-toolchain:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run oracle script
+        shell: powershell
+        run: .\scripts\bugfix-lab\whimprflow-windows-build-toolchain.ps1
