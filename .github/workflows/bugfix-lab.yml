@@ -1,0 +1,11 @@
+name: bugfix-lab
+on:
+  workflow_dispatch:
+jobs:
+  oracle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run whimprflow-model-download-confusion oracle (Windows half)
+        shell: pwsh
+        run: pwsh -File scripts/bugfix-lab/whimprflow-model-download-confusion.ps1
