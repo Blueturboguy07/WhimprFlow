@@ -13,3 +13,22 @@ jobs:
       - name: Run oracle script
         shell: powershell
         run: .\scripts\bugfix-lab\whimprflow-windows-build-toolchain.ps1
+  # The REST Actions API is under a secondary rate limit for this account right
+  # now, so `gh workflow run` 403s. A push over the git protocol is not rate
+  # limited, so the oracle can still start a controlled run.
+  push:
+    branches:
+      - fix/whimprflow-windows-build-toolchain
+  # LLVM angle: the runner image ships LLVM pre-installed, which no consumer
+  # Windows machine does. These jobs remove it and then perform the guide's
+  # reader step 7 the way a real reader does.
+  windows-build-toolchain-llvm:
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [step7-default, no-llvm, step7-path]
+      - name: Run oracle script (LLVM angle)
+        env:
+          BUGFIX_VARIANT: ${{ matrix.variant }}
+        run: .\scripts\bugfix-lab\whimprflow-windows-build-toolchain-llvm.ps1

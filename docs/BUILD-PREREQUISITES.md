@@ -45,12 +45,16 @@ pip install libclang==18.1.1
 ```
 
 This drops a working `libclang.dll` at
-`<your Python site-packages>\libclang\native\libclang.dll` — find the exact
+`<your Python site-packages>\clang\native\libclang.dll` — find the exact
 path with:
 
 ```powershell
-python -c "import libclang, os; print(os.path.dirname(libclang.__file__) + r'\native')"
+python -c "import clang, os; print(os.path.dirname(clang.__file__) + r'\native')"
 ```
+
+(The pip package is named `libclang`, but the importable module it installs
+is `clang` — confirmed against the wheel's own `top_level.txt`. `import
+libclang` raises `ModuleNotFoundError`; this page had that wrong.)
 
 Then point the build at it for the current shell session before running
 `cargo build` / `tauri build`:
