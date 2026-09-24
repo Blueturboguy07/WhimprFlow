@@ -4955,7 +4955,7 @@ dependencies = [
 
 [[package]]
 name = "whimpr-asr"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "hound",
@@ -4965,7 +4965,7 @@ dependencies = [
 
 [[package]]
 name = "whimpr-audio"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "cpal",
@@ -4973,7 +4973,7 @@ dependencies = [
 
 [[package]]
 name = "whimpr-cleanup"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "reqwest 0.12.28",
@@ -4985,7 +4985,7 @@ dependencies = [
 
 [[package]]
 name = "whimpr-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "serde",
@@ -4998,7 +4998,7 @@ dependencies = [
 
 [[package]]
 name = "whimpr-ipc"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -5007,7 +5007,7 @@ dependencies = [
 
 [[package]]
 name = "whimpr-llm-worker"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "llama-cpp-2",
@@ -5017,11 +5017,11 @@ dependencies = [
 
 [[package]]
 name = "whimpr-sidecar"
-version = "0.2.1"
+version = "0.2.2"
 
 [[package]]
 name = "whimpr-tauri"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "arboard",
