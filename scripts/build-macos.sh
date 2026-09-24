@@ -36,19 +36,27 @@
 # a Settings card that says "not available in this build", which is a silent
 # regression of the whole point of the publik option. Never echo its value.
 #
-# Usage: scripts/build-macos.sh [--target <triple>] [--skip-notarize]
+# The speech model: the build bundles ggml-base.en.bin (148 MB) into
+# Contents/Resources/models/ via scripts/fetch-speech-model.sh and
+# src-tauri/tauri.bundled-model.conf.json. v0.2.1 shipped without one, and a
+# fresh install could not dictate. --no-bundled-model skips it for a quick
+# local build; the app then offers its download button instead.
+#
+# Usage: scripts/build-macos.sh [--target <triple>] [--skip-notarize] [--no-bundled-model]
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 REPO_ROOT="$PWD"
 TARGET=""
 SKIP_NOTARIZE=0
+BUNDLE_MODEL=1
 DEFAULT_IDENTITY="Developer ID Application: Mann Bellani (R5R3ZS54LV)"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --target) TARGET="$2"; shift 2 ;;
     --skip-notarize) SKIP_NOTARIZE=1; shift ;;
+    --no-bundled-model) BUNDLE_MODEL=0; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -117,6 +125,18 @@ export APPLE_SIGNING_IDENTITY="$IDENTITY"
 
 BUILD_ARGS=(build)
 [ -n "$TARGET" ] && BUILD_ARGS+=(--target "$TARGET")
+
+# A release must carry the speech model; refuse one without it, the same way
+# a release without a Developer ID or the publik token is refused above.
+if [ "$BUNDLE_MODEL" = "0" ] && [ "$SKIP_NOTARIZE" = "0" ]; then
+  echo "Refusing to build a release without the bundled speech model." >&2
+  echo "Dev builds: pass --skip-notarize with --no-bundled-model." >&2
+  exit 1
+fi
+if [ "$BUNDLE_MODEL" = "1" ]; then
+  "$REPO_ROOT/scripts/fetch-speech-model.sh"
+  BUILD_ARGS+=(--config tauri.bundled-model.conf.json)
+fi
 
 cd "$REPO_ROOT/src-tauri"
 "$TAURI" "${BUILD_ARGS[@]}"

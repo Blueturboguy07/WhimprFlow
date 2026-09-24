@@ -79,6 +79,23 @@ else
 fi
 
 echo
+echo "Speech model"
+# v0.2.1 shipped with no speech model, so a fresh install could not dictate.
+MODEL="$APP/Contents/Resources/models/ggml-base.en.bin"
+MODEL_SHA256="a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002"
+if [ ! -f "$MODEL" ]; then
+  if [ "$REQUIRE_NOTARIZED" = "1" ]; then
+    fail "no speech model in the bundle — a fresh install cannot dictate until it downloads one"
+  else
+    note "no speech model in the bundle (the app offers a download button instead)"
+  fi
+elif [ "$(shasum -a 256 "$MODEL" | awk '{print $1}')" = "$MODEL_SHA256" ]; then
+  pass "ggml-base.en.bin is bundled and its checksum matches"
+else
+  fail "the bundled ggml-base.en.bin has the wrong checksum"
+fi
+
+echo
 echo "Notarization"
 if xcrun stapler validate "$APP" >/dev/null 2>&1; then
   pass "a notarization ticket is stapled to the app"

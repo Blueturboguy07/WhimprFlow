@@ -35,8 +35,11 @@ pub enum InjectionFailure {
     NoAudioCaptured,
     /// Real audio came in, but the ASR engine returned an empty transcript.
     EmptyTranscript,
-    /// The speech model failed to load, or no model file is present on disk.
+    /// No speech model is loaded: none is on disk (or in the app bundle), or
+    /// every file present failed to load. The Hub offers a download button.
     AsrUnavailable,
+    /// A model is loaded, but transcribing this recording failed.
+    TranscriptionFailed,
 }
 
 /// The message to show the user: a short headline (fits in the pill) and a
@@ -118,10 +121,16 @@ impl InjectionFailure {
                     .into(),
             },
             (AsrUnavailable, _) => Diagnostic {
-                headline: "Speech model not found".into(),
-                detail: "No Whisper model is installed. Download a ggml-base.en.bin model (see \
-                    MODELS.md in the repo, or huggingface.co/ggerganov/whisper.cpp) into the \
-                    models folder, then relaunch."
+                headline: "Speech model not installed".into(),
+                detail: "WhimprFlow needs its speech model (148 MB) to turn your voice into \
+                    text. Click Download speech model — it installs in about a minute, with no \
+                    relaunch."
+                    .into(),
+            },
+            (TranscriptionFailed, _) => Diagnostic {
+                headline: "Couldn't transcribe that".into(),
+                detail: "The speech model hit an error on that recording. Try again — if it \
+                    keeps happening, quit and reopen WhimprFlow."
                     .into(),
             },
         }
@@ -132,13 +141,14 @@ impl InjectionFailure {
 mod tests {
     use super::*;
 
-    const ALL_FAILURES: [InjectionFailure; 6] = [
+    const ALL_FAILURES: [InjectionFailure; 7] = [
         InjectionFailure::AccessibilityNotGranted,
         InjectionFailure::HotkeyTapFailed,
         InjectionFailure::ClipboardUnavailable,
         InjectionFailure::NoAudioCaptured,
         InjectionFailure::EmptyTranscript,
         InjectionFailure::AsrUnavailable,
+        InjectionFailure::TranscriptionFailed,
     ];
     const ALL_PLATFORMS: [Platform; 2] = [Platform::MacOs, Platform::Windows];
     /// A pill headline should stay short enough not to force the flow bar
@@ -192,9 +202,15 @@ mod tests {
     }
 
     #[test]
-    fn asr_unavailable_points_at_models_md() {
-        let d = InjectionFailure::AsrUnavailable.diagnose(Platform::MacOs);
-        assert!(d.detail.contains("MODELS.md"));
+    fn asr_unavailable_names_the_download_button_not_a_manual_step() {
+        // v0.2.1 told a dmg user to fetch a file from Hugging Face by hand and
+        // relaunch. The Hub now has a button; the copy must point at it.
+        for &platform in &ALL_PLATFORMS {
+            let d = InjectionFailure::AsrUnavailable.diagnose(platform);
+            assert!(d.detail.contains("Download speech model"));
+            assert!(!d.detail.contains("MODELS.md"));
+            assert!(!d.detail.contains("then relaunch"));
+        }
     }
 
     #[test]

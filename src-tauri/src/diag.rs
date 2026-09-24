@@ -82,12 +82,30 @@ pub fn clear_last_error() {
     }
 }
 
+/// Clear the remembered error only if it is `failure`'s message — used when
+/// the thing that failed recovers on its own (the speech model finished
+/// downloading), without wiping an unrelated, still-true error.
+pub fn clear_if(failure: InjectionFailure) {
+    let headline = failure.diagnose(PLATFORM).headline;
+    if let Some(m) = LAST_ERROR.get() {
+        let mut slot = m.lock().unwrap();
+        if slot.as_ref().is_some_and(|e| e.headline == headline) {
+            *slot = None;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Both tests write the one global `LAST_ERROR`; cargo runs tests in
+    /// parallel, so they take turns.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
     #[test]
     fn last_error_dto_round_trips_without_an_app() {
+        let _turn = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         // `report_text` needs an AppHandle for the emits; the remembered half
         // is what the Hub reads back, so pin that path directly.
         let dto = ErrorDto { headline: "publik API needs credit".into(), detail: "x".into() };
@@ -96,6 +114,21 @@ mod tests {
         assert_eq!(back.headline, dto.headline);
         assert_eq!(back.detail, dto.detail);
         clear_last_error();
+        assert!(last_error().is_none());
+    }
+
+    #[test]
+    fn clear_if_leaves_an_unrelated_error_in_place() {
+        let _turn = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let slot = LAST_ERROR.get_or_init(|| Mutex::new(None));
+        let other = ErrorDto { headline: "Couldn't paste".into(), detail: "x".into() };
+        *slot.lock().unwrap() = Some(other.clone());
+        clear_if(InjectionFailure::AsrUnavailable);
+        assert_eq!(last_error().map(|e| e.headline), Some(other.headline));
+
+        let asr = InjectionFailure::AsrUnavailable.diagnose(PLATFORM);
+        *slot.lock().unwrap() = Some(ErrorDto { headline: asr.headline, detail: asr.detail });
+        clear_if(InjectionFailure::AsrUnavailable);
         assert!(last_error().is_none());
     }
 }

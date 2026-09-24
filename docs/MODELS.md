@@ -1,11 +1,16 @@
 # Which model do I download?
 
-WhimprFlow does **not** download models for you — you place them by hand in a
-folder, and the app picks up whichever ones it finds. This page exists
-because "it tells me to download a ggml-base speech model, which one do I
-download?" was a real support report: the Hugging Face pages this points at
-list dozens of files, and only a few exact names are ones WhimprFlow actually
-looks for.
+**Short answer: you do not need to download anything by hand.**
+
+- The macOS release (the dmg) carries the speech model, `ggml-base.en.bin`,
+  inside the app.
+- Any build without it (a source build, a Windows build) opens a popup with a
+  **Download speech model (148 MB)** button. The app downloads the file from
+  huggingface.co, checks its SHA-256, and starts to use it with no relaunch.
+  The same button is on the red banner at the top of the Hub.
+
+The rest of this page is for people who want a bigger model, or who want to
+place files by hand. Only a few exact filenames are ones WhimprFlow looks for.
 
 There are two *separate* models. **You only ever need the first one.**
 
@@ -20,7 +25,8 @@ macOS, or the loud in-app error the pill/Hub now show).
 
 ## 1. Speech-to-text (Whisper) — required
 
-Download **one** file and put it in your models folder:
+The app handles this one for you (see above). To place it by hand instead,
+download **one** file and put it in your models folder:
 
 **Recommended default — `ggml-base.en.bin` (148 MB, English-only, fastest to load):**
 
@@ -33,7 +39,8 @@ Save it with that exact name, no renaming needed. Place it at:
 - **macOS**: `~/Library/Application Support/WhimprFlow/models/ggml-base.en.bin`
 - **Windows**: `%APPDATA%\WhimprFlow\models\ggml-base.en.bin`
 
-That's it — restart WhimprFlow and dictation works.
+That's it — restart WhimprFlow and dictation works. A file in this folder
+always wins over the copy bundled in the app.
 
 ### Want better accuracy? (optional)
 
@@ -97,5 +104,6 @@ Launch WhimprFlow from a terminal (`./dev.sh` on macOS, or run the built
 [whimpr] ASR model loaded — ready to transcribe
 ```
 
-at startup. If instead you see `ASR model not found at <path>`, the filename
-or folder doesn't match exactly what's listed above — re-check both.
+at startup. If instead you see `no usable speech model in <path> or the app
+bundle`, the filename or folder doesn't match exactly what's listed above —
+re-check both, or use the Download speech model button in the Hub.

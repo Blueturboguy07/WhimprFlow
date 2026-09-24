@@ -28,7 +28,26 @@ permissions:
   contents: write
 
 jobs:
+  # Tag builds need the Apple certificate secrets. Until they are set, releases
+  # are cut locally with scripts/build-macos.sh (which bundles the speech model
+  # and notarizes), and this job skips instead of failing on every tag.
+  secrets-check:
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - id: check
+        env:
+          CERT: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+        run: |
+          if [ -n "$CERT" ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::APPLE_CERT_P12_BASE64 is not set — skipping the CI macOS release build."
+          fi
+
   macos:
+    needs: secrets-check
+    if: needs.secrets-check.outputs.ready == 'true'
     runs-on: macos-14
     timeout-minutes: 90
     steps:

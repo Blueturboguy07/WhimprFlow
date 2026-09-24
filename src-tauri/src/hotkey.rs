@@ -26,7 +26,7 @@ mod imp {
     use super::DictEntryDto;
     use std::ptr::{null, null_mut};
     use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::{Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
     use serde::Serialize;
@@ -95,16 +95,10 @@ mod imp {
     static CLOCK: OnceLock<Instant> = OnceLock::new();
     static FN_IS_DOWN: AtomicBool = AtomicBool::new(false);
     static TAP_PORT: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
-    /// Set once at startup if no Whisper model file exists on disk at all —
-    /// distinct from "still loading", so the finalize path only shows the
-    /// user a loud "no speech model" error for the real case, not a race
-    /// against the ~1s background load right after launch.
-    static ASR_MODEL_MISSING: AtomicBool = AtomicBool::new(false);
     /// Bundle id of the app that was frontmost at record-start = the paste target.
     /// Cleanup uses it to format for the medium (email vs. text vs. chat).
     static TARGET_APP: OnceLock<Mutex<Option<String>>> = OnceLock::new();
     static CAPTURE: OnceLock<Mutex<Option<whimpr_audio::CaptureHandle>>> = OnceLock::new();
-    static ASR: OnceLock<Arc<whimpr_asr::WhisperEngine>> = OnceLock::new();
     static OPENAI: OnceLock<Mutex<Option<whimpr_cleanup::OpenAiProvider>>> = OnceLock::new();
     static ANTHROPIC: OnceLock<Mutex<Option<whimpr_cleanup::AnthropicProvider>>> = OnceLock::new();
     static PUBLIK: OnceLock<Mutex<Option<whimpr_cleanup::PublikProvider>>> = OnceLock::new();
@@ -126,26 +120,6 @@ mod imp {
     #[derive(Clone, Serialize)]
     struct TranscriptPayload {
         text: String,
-    }
-
-    /// The whisper ASR model to load: prefer the most accurate one present, in
-    /// descending quality order, falling back to the small base model. Bigger
-    /// English models mis-hear names/technical terms far less (and better ASR means
-    /// less for cleanup and the dictionary to fix downstream).
-    fn model_path() -> PathBuf {
-        let dir = support_dir().join("models");
-        for name in [
-            "ggml-large-v3-turbo.bin",
-            "ggml-medium.en.bin",
-            "ggml-small.en.bin",
-            "ggml-base.en.bin",
-        ] {
-            let p = dir.join(name);
-            if p.exists() {
-                return p;
-            }
-        }
-        dir.join("ggml-base.en.bin")
     }
 
     fn support_dir() -> PathBuf {
@@ -554,10 +528,10 @@ mod imp {
                         finish();
                         return;
                     }
-                    let Some(asr) = ASR.get().cloned() else {
+                    let Some(asr) = crate::asr_model::engine() else {
                         eprintln!("[whimpr] ASR not ready (model still loading or missing)");
-                        if was_real_attempt && ASR_MODEL_MISSING.load(Ordering::SeqCst) {
-                            crate::diag::report(&app2, whimpr_core::InjectionFailure::AsrUnavailable);
+                        if was_real_attempt {
+                            crate::asr_model::report_unavailable(&app2);
                         }
                         finish();
                         return;
@@ -605,7 +579,7 @@ mod imp {
                         Err(e) => {
                             eprintln!("[whimpr] ASR error: {e}");
                             if was_real_attempt {
-                                crate::diag::report(&app2, whimpr_core::InjectionFailure::AsrUnavailable);
+                                crate::diag::report(&app2, whimpr_core::InjectionFailure::TranscriptionFailed);
                             }
                         }
                     }
@@ -699,25 +673,8 @@ mod imp {
         let _ = MACHINE.set(Mutex::new(StateMachine::new()));
         let _ = CLOCK.set(Instant::now());
 
-        // Load the speech-to-text model off the main thread (it takes ~1s).
-        std::thread::spawn(|| {
-            let path = model_path();
-            if !path.exists() {
-                eprintln!("[whimpr] ASR model not found at {}", path.display());
-                ASR_MODEL_MISSING.store(true, Ordering::SeqCst);
-                return;
-            }
-            match whimpr_asr::WhisperEngine::load(&path) {
-                Ok(engine) => {
-                    let _ = ASR.set(Arc::new(engine));
-                    eprintln!("[whimpr] ASR model loaded — ready to transcribe");
-                }
-                Err(e) => {
-                    eprintln!("[whimpr] ASR model load failed: {e}");
-                    ASR_MODEL_MISSING.store(true, Ordering::SeqCst);
-                }
-            }
-        });
+        // Find and load the speech-to-text model off the main thread (~1s).
+        crate::asr_model::start(APP.get().expect("APP set above"));
 
         // Load settings + dictionary, and build cloud providers from stored keys.
         let settings = whimpr_core::Settings::load(&settings_path());

@@ -13,7 +13,7 @@
 #![cfg(target_os = "windows")]
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter};
@@ -41,11 +41,7 @@ const PTT_VK: u16 = VK_RCONTROL.0;
 static APP: OnceLock<AppHandle> = OnceLock::new();
 static CLOCK: OnceLock<Instant> = OnceLock::new();
 static RECORDING: AtomicBool = AtomicBool::new(false);
-/// Set once at startup if no Whisper model file exists on disk at all —
-/// distinct from "still loading". Mirrors the macOS flag in `hotkey.rs`.
-static ASR_MODEL_MISSING: AtomicBool = AtomicBool::new(false);
 static CAPTURE: OnceLock<Mutex<Option<whimpr_audio::CaptureHandle>>> = OnceLock::new();
-static ASR: OnceLock<Arc<whimpr_asr::WhisperEngine>> = OnceLock::new();
 static LOCAL: OnceLock<Mutex<Option<crate::local_llm::LocalWorker>>> = OnceLock::new();
 static OPENAI: OnceLock<Mutex<Option<whimpr_cleanup::OpenAiProvider>>> = OnceLock::new();
 static PUBLIK: OnceLock<Mutex<Option<whimpr_cleanup::PublikProvider>>> = OnceLock::new();
@@ -67,17 +63,6 @@ fn dict_path() -> std::path::PathBuf {
 fn stats_path() -> std::path::PathBuf {
     support_dir().join("stats.json")
 }
-fn whisper_model_path() -> std::path::PathBuf {
-    let dir = support_dir().join("models");
-    for name in ["ggml-medium.en.bin", "ggml-small.en.bin", "ggml-base.en.bin"] {
-        let p = dir.join(name);
-        if p.exists() {
-            return p;
-        }
-    }
-    dir.join("ggml-base.en.bin")
-}
-
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -297,11 +282,11 @@ fn on_ptt_up() {
             }
             return;
         }
-        let Some(asr) = ASR.get().cloned() else {
+        let Some(asr) = crate::asr_model::engine() else {
             eprintln!("[whimpr:win] ASR not ready (model still loading or missing)");
-            if was_real_attempt && ASR_MODEL_MISSING.load(Ordering::SeqCst) {
+            if was_real_attempt {
                 if let Some(app) = APP.get() {
-                    crate::diag::report(app, whimpr_core::InjectionFailure::AsrUnavailable);
+                    crate::asr_model::report_unavailable(app);
                 }
             }
             return;
@@ -330,7 +315,7 @@ fn on_ptt_up() {
                 eprintln!("[whimpr:win] ASR error: {e}");
                 if was_real_attempt {
                     if let Some(app) = APP.get() {
-                        crate::diag::report(app, whimpr_core::InjectionFailure::AsrUnavailable);
+                        crate::diag::report(app, whimpr_core::InjectionFailure::TranscriptionFailed);
                     }
                 }
             }
@@ -405,25 +390,11 @@ pub fn install(app: AppHandle) {
     let _ = LOCAL.set(Mutex::new(None));
     rebuild_providers();
 
-    // Load Whisper.
-    std::thread::spawn(|| {
-        let path = whisper_model_path();
-        if !path.exists() {
-            eprintln!("[whimpr:win] ASR model not found at {}", path.display());
-            ASR_MODEL_MISSING.store(true, Ordering::SeqCst);
-            return;
-        }
-        match whimpr_asr::WhisperEngine::load(&path) {
-            Ok(engine) => {
-                let _ = ASR.set(Arc::new(engine));
-                eprintln!("[whimpr:win] ASR ready");
-            }
-            Err(e) => {
-                eprintln!("[whimpr:win] ASR load failed: {e}");
-                ASR_MODEL_MISSING.store(true, Ordering::SeqCst);
-            }
-        }
-    });
+    // Find and load Whisper (a model in %APPDATA%\WhimprFlow\models, else the
+    // copy bundled with the app).
+    if let Some(app) = APP.get() {
+        crate::asr_model::start(app);
+    }
     // Start the local cleanup worker.
     std::thread::spawn(|| {
         if let Some(w) = crate::local_llm::spawn_default() {

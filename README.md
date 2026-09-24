@@ -62,9 +62,11 @@ pnpm --dir ui approve-builds --all
 ui/node_modules/.bin/tauri build --bundles app
 ```
 
-Models are **not** committed (they're multi-GB) — see **[docs/MODELS.md](docs/MODELS.md)**
-for the exact file + download link (short version: `ggml-base.en.bin` is
-required, a Qwen GGUF for local/offline cleanup is optional).
+Models are **not** committed (they're multi-GB). `scripts/build-macos.sh`
+bundles the speech model (`ggml-base.en.bin`) into release builds. A build
+without it shows a **Download speech model** button on first launch — see
+**[docs/MODELS.md](docs/MODELS.md)** (a Qwen GGUF for local/offline cleanup is
+optional).
 
 ## Build (Windows)
 
@@ -89,10 +91,10 @@ ui\node_modules\.bin\tauri.CMD dev
 ui\node_modules\.bin\tauri.CMD build
 ```
 
-Place models under `%APPDATA%\WhimprFlow\models\` — see
-**[docs/MODELS.md](docs/MODELS.md)** for the exact file + download link
-(short version: `ggml-base.en.bin` is required, a Qwen GGUF for local/offline
-cleanup is optional). No local LLM model?
+On first launch the app offers a **Download speech model** button and puts
+the file in `%APPDATA%\WhimprFlow\models\` — see
+**[docs/MODELS.md](docs/MODELS.md)** to place models by hand (a Qwen GGUF for
+local/offline cleanup is optional). No local LLM model?
 Set Cleanup Engine to **OpenAI** in the Hub's Settings pane and point the base URL at
 any OpenAI-compatible API — for example `https://openrouter.ai/api/v1` for
 [OpenRouter](https://openrouter.ai), with your OpenRouter key pasted into the
@@ -127,9 +129,9 @@ why it looked like nothing was happening at all). If you still hit this:
 - **Windows — Right Ctrl does nothing.** Another app may be holding a
   conflicting global keyboard hook (some anti-cheat/security tools do this);
   close it and relaunch WhimprFlow.
-- **No speech model.** See [docs/MODELS.md](docs/MODELS.md) — dictation needs
-  a Whisper `ggml-*.bin` file placed by hand; the app doesn't download one for
-  you.
+- **"Speech model not installed".** Click **Download speech model** in the
+  popup or on the Hub banner (148 MB, no relaunch). To place a model by hand,
+  see [docs/MODELS.md](docs/MODELS.md).
 - Still stuck? Run the app from a terminal (`./dev.sh` on macOS, or the built
   `.exe` from PowerShell on Windows) and hold the key once — every failure
   path also logs a `[whimpr]`-prefixed line explaining what happened.

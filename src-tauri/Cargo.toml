@@ -33,6 +33,10 @@ tracing = { workspace = true }
 anyhow = { workspace = true }
 arboard = "3"
 tauri-plugin-global-shortcut = "2"
+# The in-app speech model download (asr_model.rs): same reqwest build the
+# cleanup crate already compiles, and SHA-256 to check the file before use.
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }
+sha2 = "0.10"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 # Windows platform layer (low-level keyboard hook, SendInput paste, foreground-app

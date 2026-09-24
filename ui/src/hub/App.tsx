@@ -9,12 +9,17 @@ import { DictionaryPane } from "./DictionaryPane";
 import { SettingsPane } from "./SettingsPane";
 import { Help } from "./Help";
 import { ComingSoon } from "./ComingSoon";
+import { SpeechModelPrompt, MODEL_SIZE_LABEL, mb } from "./SpeechModelPrompt";
 import type { IconName } from "./icons";
 import {
   getSettings,
   setSettings,
   getStatus,
   getLastError,
+  getAsrModel,
+  downloadAsrModel,
+  onAsrModel,
+  onAsrModelPrompt,
   getPublikStatus,
   onPermissions,
   onPublik,
@@ -27,6 +32,7 @@ import {
   type Settings,
   type Status,
   type LastError,
+  type AsrModel,
   DEFAULT_SETTINGS,
   UNKNOWN_PUBLIK,
   UNKNOWN_STATUS,
@@ -94,13 +100,17 @@ function ErrorBanner({
   actionLabel,
   onAction,
   onDismiss,
+  tone = "error",
 }: {
   headline: string;
   detail: string;
   actionLabel?: string;
   onAction?: () => void;
   onDismiss: () => void;
+  // "info" is for work in progress (the speech model download), not a fault.
+  tone?: "error" | "info";
 }) {
+  const info = tone === "info";
   return (
     <div
       style={{
@@ -108,12 +118,12 @@ function ErrorBanner({
         alignItems: "center",
         gap: 14,
         padding: "10px 20px",
-        background: "rgba(255,107,107,0.12)",
-        borderBottom: `1px solid rgba(255,107,107,0.35)`,
+        background: info ? theme.accentSoft : "rgba(255,107,107,0.12)",
+        borderBottom: `1px solid ${info ? theme.accentSoftBorder : "rgba(255,107,107,0.35)"}`,
         fontFamily: font.ui,
       }}
     >
-      <span style={{ fontSize: 15, flex: "0 0 auto" }}>⚠</span>
+      <span style={{ fontSize: 15, flex: "0 0 auto" }}>{info ? "↓" : "⚠"}</span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <span style={{ fontSize: 13, fontWeight: 700, color: palette.slate900 }}>{headline}</span>
         <span style={{ fontSize: 13, color: theme.textMuted, marginLeft: 8 }}>{detail}</span>
@@ -131,7 +141,7 @@ function ErrorBanner({
             fontWeight: 600,
             fontFamily: font.ui,
             color: "#fff",
-            background: palette.error,
+            background: info ? theme.accentDeep : palette.error,
           }}
         >
           {actionLabel}
@@ -155,6 +165,14 @@ function ErrorBanner({
     </div>
   );
 }
+
+type BannerSpec = {
+  headline: string;
+  detail: string;
+  actionLabel?: string;
+  onAction?: () => void;
+  tone?: "error" | "info";
+};
 
 // Placeholder screens that are routed but not yet built.
 const SOON: Partial<Record<Page, { icon: IconName; title: string; desc: string }>> = {
@@ -190,6 +208,12 @@ export function App() {
   const [lastError, setLastError] = useState<LastError | null>(null);
   const [errorDismissed, setErrorDismissed] = useState(false);
   const [publik, setPublik] = useState<PublikStatus>(UNKNOWN_PUBLIK);
+  const [asrModel, setAsrModel] = useState<AsrModel>({ state: "loading" });
+  const [modelPromptOpen, setModelPromptOpen] = useState(false);
+  const [modelJustInstalled, setModelJustInstalled] = useState(false);
+  const modelPrevRef = useRef<AsrModel["state"]>("loading");
+  // "Not now" holds until the next failed dictation or failed download.
+  const modelPromptDismissedRef = useRef(false);
 
   const markEntered = () => {
     try { localStorage.setItem("whimpr_onboarding_done", "1"); } catch { /* ignore */ }
@@ -313,6 +337,52 @@ export function App() {
     return () => unlisten?.();
   }, []);
 
+  // The speech model (src-tauri/src/asr_model.rs). The popup opens when no
+  // model loaded, and again when Rust says a dictation failed for that reason.
+  // Listen first, then read, so a state change between the two isn't lost.
+  useEffect(() => {
+    const apply = (m: AsrModel) => {
+      const prev = modelPrevRef.current;
+      modelPrevRef.current = m.state;
+      setAsrModel(m);
+      if (m.state === "ready" && prev === "downloading") {
+        setModelJustInstalled(true);
+        // Rust cleared its "not installed" error; drop the Hub's copy too.
+        void getLastError().then(setLastError);
+      }
+      if (m.state === "failed" || (m.state === "missing" && !modelPromptDismissedRef.current)) {
+        setModelPromptOpen(true);
+      }
+    };
+    const stops: (() => void)[] = [];
+    let gone = false;
+    const keep = (u: () => void) => (gone ? u() : stops.push(u));
+    void onAsrModel(apply)
+      .then(keep)
+      .then(() => getAsrModel())
+      .then((m) => !gone && apply(m));
+    void onAsrModelPrompt(() => {
+      modelPromptDismissedRef.current = false;
+      setModelPromptOpen(true);
+      setErrorDismissed(false);
+    }).then(keep);
+    return () => {
+      gone = true;
+      stops.forEach((u) => u());
+    };
+  }, []);
+
+  const startModelDownload = () => {
+    modelPromptDismissedRef.current = false;
+    setModelPromptOpen(true);
+    void downloadAsrModel();
+  };
+  const closeModelPrompt = () => {
+    modelPromptDismissedRef.current = true;
+    setModelPromptOpen(false);
+    setModelJustInstalled(false);
+  };
+
   const update = (s: Settings) => {
     setLocalSettings(s);
     void setSettings(s);
@@ -330,7 +400,33 @@ export function App() {
   // onboarding gate), or the pipeline reported some other failure (hotkey tap
   // dead, paste failed, empty transcript, …).
   const accessibilityLapsed = entered && !status.accessibility;
-  const banner = errorDismissed
+  // No speech model means no dictation at all, so it outranks the last
+  // pipeline error (which, while the model is missing, is that same fault).
+  const modelBanner: BannerSpec | null =
+    asrModel.state === "missing"
+      ? {
+          headline: "Speech model not installed",
+          detail: `Dictation needs a ${MODEL_SIZE_LABEL} speech model. It installs in about a minute.`,
+          actionLabel: "Download speech model",
+          onAction: startModelDownload,
+        }
+      : asrModel.state === "failed"
+        ? {
+            headline: "Speech model download failed",
+            detail: asrModel.message,
+            actionLabel: "Try again",
+            onAction: startModelDownload,
+          }
+        : asrModel.state === "downloading"
+          ? {
+              headline: "Downloading speech model",
+              detail: `${mb(asrModel.received)} of ${mb(asrModel.total)}. Dictation starts to work when it is done.`,
+              actionLabel: "Show progress",
+              onAction: () => setModelPromptOpen(true),
+              tone: "info",
+            }
+          : null;
+  const banner: BannerSpec | null = errorDismissed
     ? null
     : accessibilityLapsed
       ? {
@@ -339,9 +435,17 @@ export function App() {
           actionLabel: "Grant Accessibility",
           onAction: () => requestAccessibility(),
         }
-      : lastError
-        ? { headline: lastError.headline, detail: lastError.detail }
-        : null;
+      : modelBanner
+        ? modelBanner
+        : lastError
+          ? { headline: lastError.headline, detail: lastError.detail }
+          : null;
+  const showModelPrompt =
+    modelPromptOpen &&
+    (asrModel.state === "missing" ||
+      asrModel.state === "failed" ||
+      asrModel.state === "downloading" ||
+      (asrModel.state === "ready" && modelJustInstalled));
 
   return (
     <div
@@ -361,6 +465,15 @@ export function App() {
           actionLabel={banner.actionLabel}
           onAction={banner.onAction}
           onDismiss={() => setErrorDismissed(true)}
+          tone={banner.tone}
+        />
+      )}
+      {showModelPrompt && (
+        <SpeechModelPrompt
+          model={asrModel}
+          justInstalled={modelJustInstalled}
+          onDownload={startModelDownload}
+          onClose={closeModelPrompt}
         />
       )}
       {publik.notice && <PublikBanner notice={publik.notice} onDismiss={() => void publikDismissNotice().then(setPublik)} />}

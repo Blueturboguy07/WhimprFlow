@@ -7,6 +7,7 @@
 //! `whimpr://flowbar/state`, so the tray demo items prove the event pipeline.
 
 mod appctx;
+mod asr_model;
 mod autolearn;
 mod diag;
 mod hotkey;
@@ -322,6 +323,8 @@ pub fn run() {
             remove_dictionary_entry,
             get_status,
             get_last_error,
+            asr_model::asr_model_status,
+            asr_model::download_asr_model,
             request_microphone,
             request_accessibility,
             request_input_monitoring,

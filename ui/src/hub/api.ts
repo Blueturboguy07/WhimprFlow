@@ -182,6 +182,53 @@ export async function getLastError(): Promise<LastError | null> {
   }
 }
 
+// The Whisper speech model. Mirrors `asr_model::ModelState` in src-tauri.
+// A release carries one inside the app; when none loads, the Hub offers a
+// button that downloads it (`downloadAsrModel`) and loads it with no relaunch.
+export type AsrModel =
+  | { state: "loading" }
+  | { state: "ready"; file: string; bundled: boolean }
+  | { state: "missing" }
+  | { state: "downloading"; received: number; total: number }
+  | { state: "failed"; message: string };
+
+export async function getAsrModel(): Promise<AsrModel> {
+  try {
+    return await invoke<AsrModel>("asr_model_status");
+  } catch {
+    return { state: "loading" };
+  }
+}
+
+export async function downloadAsrModel(): Promise<void> {
+  try {
+    await invoke<void>("download_asr_model");
+  } catch {
+    /* browser preview — no-op */
+  }
+}
+
+// Every change of state, including download progress (about 5 per second).
+export async function onAsrModel(cb: (m: AsrModel) => void): Promise<() => void> {
+  try {
+    const { listen } = await import("@tauri-apps/api/event");
+    return await listen<AsrModel>("whimpr://asr-model", (e) => cb(e.payload));
+  } catch {
+    return () => {};
+  }
+}
+
+// A dictation just failed because no model is loaded. Rust has already
+// brought the Hub forward; the Hub reopens the download popup.
+export async function onAsrModelPrompt(cb: () => void): Promise<() => void> {
+  try {
+    const { listen } = await import("@tauri-apps/api/event");
+    return await listen("whimpr://asr-model/prompt", () => cb());
+  } catch {
+    return () => {};
+  }
+}
+
 export async function getStats(): Promise<StatsSummary> {
   try {
     const tz = new Date().getTimezoneOffset(); // minutes to add to local -> UTC
