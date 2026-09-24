@@ -203,7 +203,9 @@ else
   # The publik API module is compiled in (its base URL is a string constant).
   # The app token's value is never grepped or printed — only its presence is
   # inferred by the Settings card at runtime, not here.
-  if strings "$BINARY" | grep -q "publikhq.com/api/v1"; then
+  # Not `grep -q`: it exits at the first match, `strings` then dies of
+  # SIGPIPE, and `pipefail` turns a found string into a failed check.
+  if strings "$BINARY" | grep "publikhq.com/api/v1" >/dev/null; then
     pass "publik API module is compiled in"
   elif [ "$REQUIRE_NOTARIZED" = "1" ]; then
     fail "publik API module is missing from the binary"
