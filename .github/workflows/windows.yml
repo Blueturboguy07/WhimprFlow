@@ -10,7 +10,7 @@ name: windows
 
 on:
   push:
-    branches: [main, fix/speech-model-download]  # branch entry: temporary, for the pre-merge run
+    branches: [main]
   pull_request:
   release:
     types: [published]
