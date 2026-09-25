@@ -64,15 +64,27 @@ impl Drop for LocalWorker {
     }
 }
 
-/// Platform application-support dir: `~/Library/Application Support/WhimprFlow`
-/// on macOS, `%APPDATA%\WhimprFlow` on Windows.
+/// Platform application-support dir:
+/// - Linux: `$XDG_DATA_HOME/WhimprFlow` or `~/.local/share/WhimprFlow`
+/// - macOS: `~/Library/Application Support/WhimprFlow`
+/// - Windows: `%APPDATA%\WhimprFlow`
 fn app_support_dir() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(d) = std::env::var("XDG_DATA_HOME") {
+            if !d.is_empty() {
+                return PathBuf::from(d).join("WhimprFlow");
+            }
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        PathBuf::from(home).join(".local/share/WhimprFlow")
+    }
     #[cfg(target_os = "windows")]
     {
         let base = std::env::var("APPDATA").unwrap_or_default();
         PathBuf::from(base).join("WhimprFlow")
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
         let home = std::env::var("HOME").unwrap_or_default();
         PathBuf::from(home).join("Library/Application Support/WhimprFlow")

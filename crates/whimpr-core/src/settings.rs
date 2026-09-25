@@ -69,6 +69,12 @@ pub struct Settings {
     pub asr_model: String,
     /// Play the record-start ping.
     pub sound_on_start: bool,
+    /// The push-to-talk key, stored as an rdev::Key variant string (e.g.
+    /// "ControlRight"). Defaults to Right Ctrl. Only meaningful on platforms
+    /// that read it (currently Linux's rdev-based hook); macOS/Windows use
+    /// their own native key constant today.
+    #[serde(default = "default_push_to_talk_key")]
+    pub push_to_talk_key: String,
     /// The global hotkey that toggles HANDS-FREE (locked) dictation — press once
     /// to start talking, press again to stop, with no key held down. An
     /// accelerator string in Tauri's format (e.g. "CmdOrCtrl+Shift+Space", the
@@ -127,6 +133,10 @@ pub fn default_hands_free_hotkey() -> String {
     "CmdOrCtrl+Shift+Space".to_string()
 }
 
+fn default_push_to_talk_key() -> String {
+    "ControlRight".to_string()
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -139,6 +149,7 @@ impl Default for Settings {
             asr_base_url: String::new(),
             asr_model: default_asr_model(),
             sound_on_start: true,
+            push_to_talk_key: default_push_to_talk_key(),
             hands_free_hotkey: default_hands_free_hotkey(),
             publik_disclosure_version: 0,
             publik_install_id: String::new(),

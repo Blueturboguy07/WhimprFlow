@@ -22,6 +22,10 @@ export interface Settings {
   asr_base_url: string;
   asr_model: string;
   sound_on_start: boolean;
+  // Push-to-talk key variant string (e.g. "ControlRight", "AltLeft", "MetaLeft").
+  // Currently read by the Linux (rdev) backend; macOS/Windows use their own
+  // native key constant.
+  push_to_talk_key: string;
   // Tauri accelerator that toggles hands-free (locked) dictation — press once to
   // start talking with no key held, again to stop. Default "CmdOrCtrl+Shift+Space".
   // Empty disables it. (Holding Fn and double-tapping Fn always work too.)
@@ -113,6 +117,7 @@ export const DEFAULT_SETTINGS: Settings = {
   asr_base_url: "",
   asr_model: "whisper-large-v3-turbo",
   sound_on_start: true,
+  push_to_talk_key: "ControlRight",
   hands_free_hotkey: "CmdOrCtrl+Shift+Space",
   publik_disclosure_version: 0,
   publik_install_id: "",

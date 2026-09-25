@@ -884,8 +884,16 @@ pub use crate::win::{
     trigger_hands_free, update_settings,
 };
 
-// Other platforms (Linux, etc.): inert stubs so the crate still builds.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+// Linux: real platform layer (rdev hotkey + xdotool/ydotool paste + full pipeline).
+#[cfg(target_os = "linux")]
+pub use crate::linux::{
+    cancel_dictation, current_settings, dictionary_add, dictionary_entries, dictionary_learn,
+    dictionary_remove, history, install, rebuild_providers, stats_summary, stop_dictation,
+    trigger_hands_free, update_settings,
+};
+
+// Other platforms (none currently shipped): inert stubs so the crate still builds.
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 mod other {
     pub fn install(_app: tauri::AppHandle) {}
     pub fn current_settings() -> whimpr_core::Settings {
@@ -909,7 +917,7 @@ mod other {
     pub fn cancel_dictation() {}
     pub fn trigger_hands_free() {}
 }
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub use other::{
     cancel_dictation, current_settings, dictionary_add, dictionary_entries, dictionary_learn,
     dictionary_remove, history, install, rebuild_providers, stats_summary, stop_dictation,
