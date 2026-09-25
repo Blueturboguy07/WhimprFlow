@@ -170,6 +170,11 @@ pub fn post_process(text: &str) -> String {
     let restored = stripped
         .replace(NP_SENTINEL, "\n\n")
         .replace(NL_SENTINEL, "\n");
+    // Then the shapes a model echoes back instead of the exact marker — "[[ NL ]]",
+    // "[[nl]]". Without this they reach the user's cursor as literal text, and no
+    // gate catches it: normalize_tok strips the brackets, so "nl" looks like a word
+    // that was already in the transcript.
+    let restored = restore_sentinel_variants(&restored);
     let de_cued = replace_cues(&restored, LAYOUT_CUES_POST);
     cap_and_trim_lines(&de_cued)
 }
@@ -226,8 +231,55 @@ fn strip_code_fence(s: &str) -> String {
     t.to_string()
 }
 
+/// Words that, immediately BEFORE a layout cue, mean the speaker is talking about a
+/// line rather than asking for one: "the next line of code", "a line break down of
+/// the costs", "the new line item on the invoice". Without this guard the cue words
+/// are deleted and replaced with a break the speaker never asked for — "the next
+/// line of code is broken" comes out as "the" / "of code is broken".
+///
+/// Deliberately short: determiners, demonstratives and possessives only.
+///
+/// Some of these ("that", "her", "same") are also common clause-final words, so the
+/// guard will sometimes suppress a cue the speaker did mean as a command — "scratch
+/// that new line let's start over" keeps "new line" as words. That trade is on
+/// purpose, because the two failures are not equal. Suppressing wrongly leaves the
+/// words in the transcript for the model to interpret, and the system prompt already
+/// tells it to turn a spoken "new line" into a newline. Firing wrongly DELETES what
+/// the speaker said, and nothing downstream can put it back.
+const NOUN_PHRASE_BEFORE: &[&str] = &[
+    "the", "a", "an", "this", "that", "these", "those", "each", "every", "another", "my", "your",
+    "his", "her", "its", "our", "their", "any", "per", "same",
+];
+
+/// Words that, immediately AFTER a cue, do the same job: "next line of code".
+///
+/// Only "of". "item" and "number" belong here on grammar ("new line item") but they
+/// are also the words people say straight after a genuine break when dictating a
+/// list — "new line number two is the deadline" — and the determiner in front
+/// ("the new line item") already catches the noun reading in practice.
+const NOUN_PHRASE_AFTER: &[&str] = &["of"];
+
+/// The last whitespace-separated word of `s`, lowercased and stripped of
+/// punctuation. Empty when there is none.
+fn last_word(s: &str) -> String {
+    s.split_whitespace().next_back().map(bare_word).unwrap_or_default()
+}
+
+/// The next whitespace-separated word at or after `from`, lowercased and stripped
+/// of punctuation. Empty when there is none.
+fn next_word(chars: &[char], from: usize) -> String {
+    let rest: String = chars[from.min(chars.len())..].iter().collect();
+    rest.split_whitespace().next().map(bare_word).unwrap_or_default()
+}
+
+fn bare_word(w: &str) -> String {
+    w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()
+}
+
 /// Replace whole-word layout cues using the given table. Boundary-checked so it
 /// only fires on standalone command words, and swallows one following space.
+/// A cue sitting inside a noun phrase is left as ordinary words — see
+/// [`NOUN_PHRASE_BEFORE`].
 fn replace_cues(input: &str, cues: &[(&str, &str)]) -> String {
     let chars: Vec<char> = input.chars().collect();
     let n = chars.len();
@@ -243,12 +295,68 @@ fn replace_cues(input: &str, cues: &[(&str, &str)]) -> String {
                     && (0..plen).all(|k| chars[i + k].to_ascii_lowercase() == p[k])
                     && (i + plen == n || !chars[i + plen].is_alphanumeric())
                 {
+                    // A cue inside a noun phrase is being talked about, not asked
+                    // for. Copy it through untouched and resume AFTER it.
+                    //
+                    // Resuming past the whole phrase is what makes the guard hold:
+                    // advancing a single character instead lets an OVERLAPPING cue
+                    // fire inside the same noun phrase. "the next line break here"
+                    // would suppress "next line", step forward one char, then match
+                    // "line break" with "next" in front of it — and lose the words
+                    // anyway.
+                    if NOUN_PHRASE_BEFORE.contains(&last_word(&out).as_str())
+                        || NOUN_PHRASE_AFTER.contains(&next_word(&chars, i + plen).as_str())
+                    {
+                        for k in i..i + plen {
+                            out.push(chars[k]);
+                        }
+                        i += plen;
+                        continue 'scan;
+                    }
                     out.push_str(rep);
                     i += plen;
                     if i < n && chars[i] == ' ' {
                         i += 1; // swallow the space after the cue
                     }
                     continue 'scan;
+                }
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out
+}
+
+/// Turn near-miss break sentinels into real line breaks: `[[ NL ]]`, `[[nl]]`,
+/// `[[Np]]`. The exact markers are already gone by the time this runs; this catches
+/// what a model returns when it reformats one, so it never lands at the cursor as
+/// literal text. Anything else in double brackets is left alone — it might be the
+/// speaker's own words.
+fn restore_sentinel_variants(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '[' && chars.get(i + 1) == Some(&'[') {
+            // The marker is short, so don't scan the whole text for a stray "[[".
+            let limit = (i + 12).min(chars.len());
+            let close = (i + 2..limit.saturating_sub(1))
+                .find(|&j| chars[j] == ']' && chars[j + 1] == ']');
+            if let Some(close) = close {
+                let inner: String = chars[i + 2..close].iter().collect();
+                match inner.trim().to_ascii_lowercase().as_str() {
+                    "nl" => {
+                        out.push('\n');
+                        i = close + 2;
+                        continue;
+                    }
+                    "np" => {
+                        out.push_str("\n\n");
+                        i = close + 2;
+                        continue;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -308,6 +416,74 @@ mod tests {
     fn post_process_leaves_ordinary_text_alone() {
         // "new design" is not a layout cue; "actually" is never touched here.
         let s = "I actually really liked the new design.";
+        assert_eq!(post_process(s), s);
+    }
+
+    #[test]
+    fn a_cue_inside_a_noun_phrase_is_left_alone() {
+        // Each of these used to lose the cue words and gain a line break: "the next
+        // line of code is broken" came out as "the" / "of code is broken".
+        for spoken in [
+            "the next line of code is broken",
+            "read the next line to me",
+            "the new line item on the invoice",
+            "send me a line break down of the costs",
+            "check every new line for trailing spaces",
+            // No determiner in front — caught by the word after the cue instead.
+            "it goes on next line of the form",
+        ] {
+            assert_eq!(
+                pre_normalize_layout(spoken),
+                spoken,
+                "pre-pass must not touch a cue used as a noun"
+            );
+            assert_eq!(
+                post_process(spoken),
+                spoken,
+                "post-pass must not touch it either"
+            );
+        }
+    }
+
+    #[test]
+    fn an_overlapping_cue_cannot_sneak_past_the_guard() {
+        // "next line" is suppressed here by "the", but "line break" starts one word
+        // inside it. Resuming the scan a single character later matched that second
+        // cue and lost the words regardless — the guard has to skip the whole phrase.
+        for spoken in [
+            "the next line break here",
+            "check the new line break in that file",
+        ] {
+            assert_eq!(pre_normalize_layout(spoken), spoken);
+            assert_eq!(post_process(spoken), spoken);
+        }
+    }
+
+    #[test]
+    fn a_cue_used_as_a_command_still_breaks_the_line() {
+        // The guard must not cost us the behaviour it protects.
+        assert_eq!(
+            post_process(&pre_normalize_layout("that's all for now new paragraph one more thing")),
+            "that's all for now\n\none more thing"
+        );
+        assert_eq!(
+            post_process(&pre_normalize_layout("first item new line second item")),
+            "first item\nsecond item"
+        );
+    }
+
+    #[test]
+    fn post_process_restores_a_reformatted_sentinel() {
+        // A model that adds spaces or lowercases the marker used to have it pasted
+        // at the cursor verbatim.
+        assert_eq!(post_process("line one [[ NL ]] line two"), "line one\nline two");
+        assert_eq!(post_process("line one [[nl]] line two"), "line one\nline two");
+        assert_eq!(post_process("para one [[Np]] para two"), "para one\n\npara two");
+    }
+
+    #[test]
+    fn post_process_leaves_other_bracketed_text_alone() {
+        let s = "the array is [[1, 2], [3, 4]] in that order";
         assert_eq!(post_process(s), s);
     }
 
