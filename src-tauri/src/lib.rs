@@ -30,7 +30,25 @@ use tauri::{
 const OVERLAY_LABEL: &str = "whimpr_bar";
 const HUB_LABEL: &str = "main";
 
-/// Anchor the overlay window bottom-center of its monitor.
+/// The overlay's size in LOGICAL points — matches `build_overlay`'s
+/// `.inner_size(300.0, 72.0)`.
+///
+/// Deliberately a constant rather than reading `outer_size()`: that returns
+/// physical pixels for whichever display the window is on *right now*, so
+/// dividing it by the scale of the display we are moving TO gave a size that
+/// was wrong by the ratio between them. Moving from a 1× screen to a 2× one
+/// computed a pill half its real size and parked it under the Dock. The window
+/// is not resizable, so its logical size never changes.
+const OVERLAY_W_PT: f64 = 300.0;
+const OVERLAY_H_PT: f64 = 72.0;
+/// Gap in points between the bottom of the screen's *work area* and the pill.
+/// The work area already excludes the Dock and menu bar, so this is a small
+/// breathing gap, not a Dock allowance.
+const OVERLAY_BOTTOM_INSET_PT: f64 = 12.0;
+
+/// Anchor the overlay window bottom-center of its monitor's **work area**
+/// (i.e. above the Dock and menu bar, not just inside the monitor's full
+/// bounds), correctly converted to logical points on a mixed-DPI setup.
 fn position_overlay(w: &WebviewWindow) {
     // current_monitor() can be None before the window maps; fall back sensibly.
     let monitor = w
@@ -43,17 +61,25 @@ fn position_overlay(w: &WebviewWindow) {
         eprintln!("[whimpr] no monitor found — overlay stays at default position");
         return;
     };
-    let scale = monitor.scale_factor();
-    let msize = monitor.size();
-    let mpos = monitor.position();
-    let Ok(wsize) = w.outer_size() else { return };
-    let inset = (40.0 * scale) as i32;
-    let x = mpos.x + (msize.width as i32 - wsize.width as i32) / 2;
-    let y = mpos.y + msize.height as i32 - wsize.height as i32 - inset;
-    let _ = w.set_position(tauri::PhysicalPosition { x, y });
+    let work_area = monitor.work_area();
+    let area = whimpr_core::settings::work_area_points(
+        monitor.position().y,
+        work_area.position.x,
+        work_area.position.y,
+        work_area.size.width,
+        work_area.size.height,
+        monitor.scale_factor(),
+    );
+    let (x, y) = whimpr_core::settings::pill_placement(
+        area,
+        OVERLAY_W_PT,
+        OVERLAY_H_PT,
+        OVERLAY_BOTTOM_INSET_PT,
+    );
+    let _ = w.set_position(tauri::LogicalPosition { x, y });
     eprintln!(
-        "[whimpr] overlay placed: monitor {}x{} @({},{}) scale {:.1} -> window {}x{} @({},{})",
-        msize.width, msize.height, mpos.x, mpos.y, scale, wsize.width, wsize.height, x, y
+        "[whimpr] overlay placed: work area {:?} logical -> window at logical ({:.0},{:.0})",
+        area, x, y
     );
 }
 

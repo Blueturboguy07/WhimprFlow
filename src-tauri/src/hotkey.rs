@@ -149,6 +149,27 @@ mod imp {
             .unwrap_or(0)
     }
 
+    /// Play the record-start ping, if `Settings::sound_on_start` is on.
+    ///
+    /// `Action::PlayPing` used to fall into the state machine's `_ => {}`
+    /// catch-all, so the "play a sound when recording starts" setting did
+    /// nothing. `afplay` rather than `NSSound`: no extra dependency, no
+    /// main-thread requirement, and it can be fired from the event-tap thread
+    /// without any risk of blocking key handling. Spawned so a slow process
+    /// launch never delays the rest of the tap callback.
+    fn play_start_cue() {
+        if !current_settings().sound_on_start {
+            return;
+        }
+        std::thread::spawn(|| {
+            let _ = std::process::Command::new("/usr/bin/afplay")
+                .arg("/System/Library/Sounds/Pop.aiff")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        });
+    }
+
     /// Log one completed dictation to the stats store (words, speaking time, text,
     /// target app) and persist it. Powers both the Hub stats and the history list.
     pub fn record_dictation(text: &str, duration_secs: f32) {
@@ -641,7 +662,8 @@ mod imp {
             }
             // The ASR path (StopCaptureAndFinalize) now drives pipeline completion.
             Action::RunPipeline { .. } => {}
-            // PlayPing / WarnSessionCap: no-ops for now.
+            Action::PlayPing => play_start_cue(),
+            // WarnSessionCap: no-op for now.
             _ => {}
         }
     }

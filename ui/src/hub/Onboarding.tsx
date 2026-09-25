@@ -222,6 +222,26 @@ export function Onboarding({
           {canEnter ? "Enter WhimprFlow →" : "Grant Accessibility + Microphone to continue"}
         </button>
 
+        {!canEnter && (
+          <button
+            onClick={onEnter}
+            style={{
+              marginTop: 10,
+              width: "100%",
+              cursor: "pointer",
+              border: "none",
+              background: "none",
+              padding: "6px",
+              fontSize: 12.5,
+              fontFamily: font.ui,
+              color: theme.textMuted,
+              textDecoration: "underline",
+            }}
+          >
+            Skip for now — Settings, Dictionary and history don't need these
+          </button>
+        )}
+
         <p style={{ fontSize: 12, color: theme.textFaint, lineHeight: 1.5, marginTop: 16 }}>
           If a permission stays grey after you flip it on in System Settings, toggle WhimprFlow off
           and back on in that pane — the state here will update within a second.
