@@ -106,21 +106,30 @@ pub fn worker_bin_path() -> Option<PathBuf> {
             }
         }
     }
-    // Dev fallback.
+    // Dev fallback: `tauri dev` builds the app in `target/debug`, and `dev.sh`
+    // builds the worker there too — check both profiles.
     #[cfg(target_os = "windows")]
     {
-        let dev = std::env::current_dir()
-            .unwrap_or_default()
-            .join("target/release")
-            .join(exe_name);
-        return dev.exists().then_some(dev);
+        let base = std::env::current_dir().unwrap_or_default();
+        for profile in ["release", "debug"] {
+            let dev = base.join("target").join(profile).join(exe_name);
+            if dev.exists() {
+                return Some(dev);
+            }
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {
         let home = std::env::var("HOME").unwrap_or_default();
-        let dev = PathBuf::from(home).join("WhimprFlow/target/release/whimpr-llm-worker");
-        dev.exists().then_some(dev)
+        for profile in ["release", "debug"] {
+            let dev =
+                PathBuf::from(&home).join(format!("WhimprFlow/target/{profile}/{exe_name}"));
+            if dev.exists() {
+                return Some(dev);
+            }
+        }
     }
+    None
 }
 
 /// The local cleanup model path (same models dir as whisper/ASR). Prefer the
