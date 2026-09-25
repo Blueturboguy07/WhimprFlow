@@ -138,6 +138,13 @@ if [ "$BUNDLE_MODEL" = "1" ]; then
   BUILD_ARGS+=(--config tauri.bundled-model.conf.json)
 fi
 
+# The worker is NOT an externalBin (tauri-build demands a triple-suffixed file
+# name that breaks dev builds); instead, drop it next to the app executable —
+# `worker_bin_path()` checks that location first — sign it, and re-seal the
+# bundle so Gatekeeper/notarization stay intact.
+echo "==> Building the local-LLM worker…"
+cargo build --release -p whimpr-llm-worker
+
 cd "$REPO_ROOT/src-tauri"
 "$TAURI" "${BUILD_ARGS[@]}"
 
@@ -145,6 +152,10 @@ TARGET_DIR="$REPO_ROOT/target"
 [ -n "$TARGET" ] && TARGET_DIR="$TARGET_DIR/$TARGET"
 APP="$TARGET_DIR/release/bundle/macos/WhimprFlow.app"
 DMG="$(/usr/bin/find "$TARGET_DIR/release/bundle/dmg" -name "*.dmg" -print -quit 2>/dev/null || true)"
+WORKER_DEST="$APP/Contents/MacOS/whimpr-llm-worker"
+cp "$REPO_ROOT/target/release/whimpr-llm-worker" "$WORKER_DEST"
+codesign --force --sign "$IDENTITY" "$WORKER_DEST"
+codesign --force --sign "$IDENTITY" "$APP"
 
 [ -d "$APP" ] || { echo "No WhimprFlow.app was produced." >&2; exit 1; }
 

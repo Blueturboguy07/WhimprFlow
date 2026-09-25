@@ -22,7 +22,6 @@ const PLATFORM: whimpr_core::diagnostics::Platform = whimpr_core::diagnostics::P
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const PLATFORM: whimpr_core::diagnostics::Platform = whimpr_core::diagnostics::Platform::MacOs;
 
-const OVERLAY_LABEL: &str = "whimpr_bar";
 /// How long the error stays on the pill before it reverts to idle — much
 /// longer than the ~500ms "done" flash, since this is the one state the user
 /// actually needs time to read.
@@ -34,11 +33,6 @@ static LAST_ERROR: OnceLock<Mutex<Option<ErrorDto>>> = OnceLock::new();
 pub struct ErrorDto {
     pub headline: String,
     pub detail: String,
-}
-
-#[derive(Clone, Serialize)]
-struct BarPayload {
-    state: &'static str,
 }
 
 /// Report a failure: log it, push the pill to the `error` state, broadcast
@@ -57,13 +51,14 @@ pub fn report_text(app: &AppHandle, headline: String, detail: String) {
     eprintln!("[whimpr] ⚠ {headline}: {detail}");
     let dto = ErrorDto { headline, detail };
     *LAST_ERROR.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(dto.clone());
-    let _ = app.emit_to(OVERLAY_LABEL, "whimpr://flowbar/state", BarPayload { state: "error" });
+    // Shared emitter: also makes the overlay window exist for the error state.
+    crate::emit_flowbar_state(app, "error");
     let _ = app.emit("whimpr://error", dto);
 
     let app2 = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(ERROR_LINGER_MS));
-        let _ = app2.emit_to(OVERLAY_LABEL, "whimpr://flowbar/state", BarPayload { state: "idle" });
+        crate::emit_flowbar_state(&app2, "idle");
     });
 }
 

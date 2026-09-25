@@ -113,11 +113,6 @@ mod imp {
     static STATS: OnceLock<Mutex<whimpr_core::StatsStore>> = OnceLock::new();
 
     #[derive(Clone, Serialize)]
-    struct BarPayload {
-        state: &'static str,
-    }
-
-    #[derive(Clone, Serialize)]
     struct WavePayload {
         bars: Vec<f32>,
     }
@@ -492,7 +487,8 @@ mod imp {
 
     fn emit_bar(app: &AppHandle, state: &'static str) {
         eprintln!("[whimpr] pill -> {state}");
-        let _ = app.emit_to(OVERLAY_LABEL, "whimpr://flowbar/state", BarPayload { state });
+        // Shared emitter: also toggles the overlay window (hidden at idle).
+        crate::emit_flowbar_state(app, state);
     }
 
     /// Feed one input into the shared state machine and enact its actions.
