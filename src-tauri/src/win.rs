@@ -43,6 +43,11 @@ static CLOCK: OnceLock<Instant> = OnceLock::new();
 static RECORDING: AtomicBool = AtomicBool::new(false);
 static CAPTURE: OnceLock<Mutex<Option<whimpr_audio::CaptureHandle>>> = OnceLock::new();
 static LOCAL: OnceLock<Mutex<Option<crate::local_llm::LocalWorker>>> = OnceLock::new();
+/// The cloud speech-to-text engine (`Settings::asr_mode == Cloud`), rebuilt
+/// whenever the OpenAI key or the ASR base URL / model changes. `None` when
+/// Cloud mode isn't selected or no OpenAI-slot key is saved — the finalize
+/// path falls back to `asr_model::engine()` (Local) in that case.
+static ASR_CLOUD: OnceLock<Mutex<Option<std::sync::Arc<dyn AsrEngine>>>> = OnceLock::new();
 static OPENAI: OnceLock<Mutex<Option<whimpr_cleanup::OpenAiProvider>>> = OnceLock::new();
 static PUBLIK: OnceLock<Mutex<Option<whimpr_cleanup::PublikProvider>>> = OnceLock::new();
 static SETTINGS: OnceLock<Mutex<whimpr_core::Settings>> = OnceLock::new();
@@ -282,14 +287,24 @@ fn on_ptt_up() {
             }
             return;
         }
-        let Some(asr) = crate::asr_model::engine() else {
-            eprintln!("[whimpr:win] ASR not ready (model still loading or missing)");
-            if was_real_attempt {
-                if let Some(app) = APP.get() {
-                    crate::asr_model::report_unavailable(app);
+        // Cloud ASR (Settings::asr_mode == Cloud, with an OpenAI-slot key saved)
+        // takes priority when configured; otherwise fall back to the shared
+        // local Whisper engine (asr_model.rs).
+        let cloud = ASR_CLOUD.get().and_then(|m| m.lock().unwrap().clone());
+        let asr: std::sync::Arc<dyn AsrEngine> = match cloud {
+            Some(engine) => engine,
+            None => match crate::asr_model::engine() {
+                Some(engine) => engine,
+                None => {
+                    eprintln!("[whimpr:win] ASR not ready (model still loading or missing)");
+                    if was_real_attempt {
+                        if let Some(app) = APP.get() {
+                            crate::asr_model::report_unavailable(app);
+                        }
+                    }
+                    return;
                 }
-            }
-            return;
+            },
         };
         let pcm = whimpr_audio::resample_to_16k(&res.samples, res.sample_rate);
         match asr.transcribe(&pcm) {
@@ -430,17 +445,18 @@ pub fn trigger_hands_free() {}
 
 pub fn rebuild_providers() {
     let settings = current_settings_inner();
-    let model = settings.openai_model;
-    let base_url = settings.openai_base_url;
+    let model = settings.openai_model.clone();
+    let base_url = settings.openai_base_url.clone();
     let key = keyring::Entry::new("com.whimpr.whimprflow", "openai_api_key")
         .ok()
         .and_then(|e| e.get_password().ok())
         .filter(|k| !k.trim().is_empty());
     if let Some(slot) = OPENAI.get() {
-        *slot.lock().unwrap() = key.map(|k| {
+        *slot.lock().unwrap() = key.clone().map(|k| {
             whimpr_cleanup::OpenAiProvider::with_base_url(k, model, Some(base_url))
         });
     }
+    rebuild_cloud_asr(&settings, key);
     let publik = crate::publik::read_key().map(|k| {
         whimpr_cleanup::PublikProvider::new(
             k,
@@ -452,6 +468,33 @@ pub fn rebuild_providers() {
         Some(m) => *m.lock().unwrap() = publik,
         None => {
             let _ = PUBLIK.set(Mutex::new(publik));
+        }
+    }
+}
+
+/// (Re)build the cloud speech-to-text engine to match `Settings::asr_mode`.
+/// Cloud ASR reuses the OpenAI-slot key (already looked up by the caller);
+/// `None` (Local, or Cloud with no key saved) means the finalize path falls
+/// back to `asr_model::engine()`.
+fn rebuild_cloud_asr(settings: &whimpr_core::Settings, openai_key: Option<String>) {
+    let engine: Option<std::sync::Arc<dyn AsrEngine>> =
+        if matches!(settings.asr_mode, whimpr_core::AsrMode::Cloud) {
+            openai_key.map(|key| {
+                let engine: std::sync::Arc<dyn AsrEngine> =
+                    std::sync::Arc::new(whimpr_cleanup::CloudAsr::with_base_url(
+                        key,
+                        settings.asr_model.clone(),
+                        Some(settings.asr_base_url.clone()),
+                    ));
+                engine
+            })
+        } else {
+            None
+        };
+    match ASR_CLOUD.get() {
+        Some(m) => *m.lock().unwrap() = engine,
+        None => {
+            let _ = ASR_CLOUD.set(Mutex::new(engine));
         }
     }
 }

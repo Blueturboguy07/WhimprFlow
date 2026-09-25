@@ -4,6 +4,7 @@
 
 export type CleanupMode = "raw" | "local" | "publik" | "open_ai" | "anthropic";
 export type CleanupLevel = "none" | "light" | "medium" | "high";
+export type AsrMode = "local" | "cloud";
 
 export interface Settings {
   cleanup_mode: CleanupMode;
@@ -13,6 +14,13 @@ export interface Settings {
   // an OpenAI-compatible endpoint like OpenRouter (https://openrouter.ai/api/v1).
   openai_base_url: string;
   anthropic_model: string;
+  // Which engine transcribes speech to text.
+  asr_mode: AsrMode;
+  // API root for AsrMode "cloud" — leave blank for OpenAI itself, or point at
+  // Groq's Whisper endpoint (https://api.groq.com/openai/v1). Reuses the same
+  // key as the "OpenAI" cleanup mode.
+  asr_base_url: string;
+  asr_model: string;
   sound_on_start: boolean;
   // Tauri accelerator that toggles hands-free (locked) dictation — press once to
   // start talking with no key held, again to stop. Default "CmdOrCtrl+Shift+Space".
@@ -101,6 +109,9 @@ export const DEFAULT_SETTINGS: Settings = {
   openai_model: "gpt-4o-mini",
   openai_base_url: "",
   anthropic_model: "claude-haiku-4-5",
+  asr_mode: "local",
+  asr_base_url: "",
+  asr_model: "whisper-large-v3-turbo",
   sound_on_start: true,
   hands_free_hotkey: "CmdOrCtrl+Shift+Space",
   publik_disclosure_version: 0,
@@ -262,12 +273,11 @@ export async function requestInputMonitoring(): Promise<void> {
   }
 }
 
+// Unlike the other wrappers, this one does NOT swallow errors — saving a key is
+// an explicit user action and a silent failure here (e.g. no OS credential store
+// available) should surface, not look like a successful save.
 export async function setApiKey(provider: "openai" | "anthropic", key: string): Promise<void> {
-  try {
-    await invoke<void>("set_api_key", { provider, key });
-  } catch {
-    /* browser preview */
-  }
+  await invoke<void>("set_api_key", { provider, key });
 }
 
 // ── publik API ───────────────────────────────────────────────────────────────

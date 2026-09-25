@@ -38,6 +38,12 @@ tauri-plugin-global-shortcut = "2"
 reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }
 sha2 = "0.10"
 
+# Only Windows/Linux need this: relaunching the exe otherwise spawns a second,
+# independent process (duplicate taskbar entry). macOS's Dock re-activates the
+# existing app instead, so the plugin isn't needed (and isn't supported) there.
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 # Windows platform layer (low-level keyboard hook, SendInput paste, foreground-app
 # detection). UNVERIFIED: written on macOS, never compiled or run on Windows.

@@ -383,9 +383,16 @@ export function App() {
     setModelJustInstalled(false);
   };
 
+  // Each keystroke in a settings text field calls update(); saving on every one
+  // fired overlapping, unawaited Tauri calls (each doing a keyring lookup + HTTP
+  // client rebuild) with no ordering guarantee, so a fast typist could have an
+  // earlier, shorter value win the disk write over the final one. Debounce the
+  // actual save so only the settled value after typing stops gets persisted.
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const update = (s: Settings) => {
     setLocalSettings(s);
-    void setSettings(s);
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => void setSettings(s), 400);
   };
 
   // Gate the app behind the setup wizard until the required permissions are granted.

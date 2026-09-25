@@ -103,6 +103,11 @@ mod imp {
     static ANTHROPIC: OnceLock<Mutex<Option<whimpr_cleanup::AnthropicProvider>>> = OnceLock::new();
     static PUBLIK: OnceLock<Mutex<Option<whimpr_cleanup::PublikProvider>>> = OnceLock::new();
     static LOCAL: OnceLock<Mutex<Option<crate::local_llm::LocalWorker>>> = OnceLock::new();
+    /// The cloud speech-to-text engine (`Settings::asr_mode == Cloud`), rebuilt
+    /// whenever the OpenAI key or the ASR base URL / model changes. `None` when
+    /// Cloud mode isn't selected or no OpenAI-slot key is saved — the finalize
+    /// path falls back to `asr_model::engine()` (Local) in that case.
+    static ASR_CLOUD: OnceLock<Mutex<Option<std::sync::Arc<dyn AsrEngine>>>> = OnceLock::new();
     static SETTINGS: OnceLock<Mutex<whimpr_core::Settings>> = OnceLock::new();
     static DICTIONARY: OnceLock<Mutex<whimpr_core::DictionaryStore>> = OnceLock::new();
     static STATS: OnceLock<Mutex<whimpr_core::StatsStore>> = OnceLock::new();
@@ -309,6 +314,35 @@ mod imp {
             Some(m) => *m.lock().unwrap() = publik,
             None => {
                 let _ = PUBLIK.set(Mutex::new(publik));
+            }
+        }
+        rebuild_cloud_asr(&settings);
+    }
+
+    /// (Re)build the cloud speech-to-text engine to match `Settings::asr_mode`.
+    /// Cloud ASR reuses the OpenAI-slot key; `None` (Local, or Cloud with no key
+    /// saved) means the finalize path falls back to `asr_model::engine()`.
+    fn rebuild_cloud_asr(settings: &whimpr_core::Settings) {
+        let engine: Option<std::sync::Arc<dyn AsrEngine>> = if matches!(
+            settings.asr_mode,
+            whimpr_core::AsrMode::Cloud
+        ) {
+            read_openai_key().map(|key| {
+                let engine: std::sync::Arc<dyn AsrEngine> =
+                    std::sync::Arc::new(whimpr_cleanup::CloudAsr::with_base_url(
+                        key,
+                        settings.asr_model.clone(),
+                        Some(settings.asr_base_url.clone()),
+                    ));
+                engine
+            })
+        } else {
+            None
+        };
+        match ASR_CLOUD.get() {
+            Some(m) => *m.lock().unwrap() = engine,
+            None => {
+                let _ = ASR_CLOUD.set(Mutex::new(engine));
             }
         }
     }
@@ -528,13 +562,25 @@ mod imp {
                         finish();
                         return;
                     }
-                    let Some(asr) = crate::asr_model::engine() else {
-                        eprintln!("[whimpr] ASR not ready (model still loading or missing)");
-                        if was_real_attempt {
-                            crate::asr_model::report_unavailable(&app2);
-                        }
-                        finish();
-                        return;
+                    // Cloud ASR (Settings::asr_mode == Cloud, with an OpenAI-slot key
+                    // saved) takes priority when configured; otherwise fall back to
+                    // the shared local Whisper engine (asr_model.rs).
+                    let cloud = ASR_CLOUD.get().and_then(|m| m.lock().unwrap().clone());
+                    let asr: std::sync::Arc<dyn AsrEngine> = match cloud {
+                        Some(engine) => engine,
+                        None => match crate::asr_model::engine() {
+                            Some(engine) => engine,
+                            None => {
+                                eprintln!(
+                                    "[whimpr] ASR not ready (model still loading or missing)"
+                                );
+                                if was_real_attempt {
+                                    crate::asr_model::report_unavailable(&app2);
+                                }
+                                finish();
+                                return;
+                            }
+                        },
                     };
                     let pcm = whimpr_audio::resample_to_16k(&res.samples, res.sample_rate);
                     match asr.transcribe(&pcm) {

@@ -11,6 +11,9 @@ pub enum AsrEngineId {
     FluidAudioAne,
     OnnxParakeet,
     WhisperCpp,
+    /// A cloud speech-to-text API (OpenAI-compatible `/audio/transcriptions`,
+    /// e.g. OpenAI itself or Groq's Whisper endpoint).
+    CloudWhisper,
 }
 
 /// A finalized transcription result.

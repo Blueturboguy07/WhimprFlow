@@ -182,6 +182,103 @@ impl CleanupProvider for AnthropicProvider {
     }
 }
 
+/// Default OpenAI transcription endpoint.
+const OPENAI_ASR_DEFAULT_URL: &str = "https://api.openai.com/v1/audio/transcriptions";
+
+/// Speech-to-text via any OpenAI-compatible `/audio/transcriptions` API — OpenAI
+/// itself, or Groq's Whisper endpoint (`https://api.groq.com/openai/v1`), which
+/// speaks the identical multipart wire format. Same `base_url` convention as
+/// [`OpenAiProvider`], and reuses the same API key.
+pub struct CloudAsr {
+    client: reqwest::blocking::Client,
+    api_key: String,
+    model: String,
+    /// Full transcriptions URL. Defaults to OpenAI's when empty.
+    url: String,
+}
+
+impl CloudAsr {
+    /// `base_url` is the API root (e.g. `https://api.groq.com/openai/v1`), without
+    /// the `/audio/transcriptions` suffix. `None` or empty uses OpenAI directly.
+    pub fn with_base_url(
+        api_key: String,
+        model: impl Into<String>,
+        base_url: Option<String>,
+    ) -> Self {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("failed to build HTTP client");
+        let url = match base_url.map(|s| s.trim().trim_end_matches('/').to_string()) {
+            Some(base) if !base.is_empty() => format!("{base}/audio/transcriptions"),
+            _ => OPENAI_ASR_DEFAULT_URL.to_string(),
+        };
+        Self {
+            client,
+            api_key,
+            model: model.into(),
+            url,
+        }
+    }
+}
+
+impl whimpr_core::AsrEngine for CloudAsr {
+    fn id(&self) -> whimpr_core::AsrEngineId {
+        whimpr_core::AsrEngineId::CloudWhisper
+    }
+
+    fn transcribe(&self, pcm16k: &[f32]) -> anyhow::Result<whimpr_core::asr::Transcript> {
+        let wav = encode_wav_16k_mono(pcm16k)?;
+        let part = reqwest::blocking::multipart::Part::bytes(wav)
+            .file_name("audio.wav")
+            .mime_str("audio/wav")?;
+        let form = reqwest::blocking::multipart::Form::new()
+            .part("file", part)
+            .text("model", self.model.clone())
+            .text("response_format", "json");
+
+        let resp = self
+            .client
+            .post(&self.url)
+            .bearer_auth(&self.api_key)
+            .multipart(form)
+            .send()?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let detail = resp.text().unwrap_or_default();
+            anyhow::bail!("cloud ASR HTTP {status}: {detail}");
+        }
+
+        let v: serde_json::Value = resp.json()?;
+        let text = v["text"].as_str().unwrap_or("").trim().to_string();
+        Ok(whimpr_core::asr::Transcript {
+            text,
+            confidence: None,
+        })
+    }
+}
+
+/// Encode 16 kHz mono f32 samples as a 16-bit PCM WAV in memory, for upload to a
+/// transcription API that expects an audio file rather than raw samples.
+fn encode_wav_16k_mono(pcm: &[f32]) -> anyhow::Result<Vec<u8>> {
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 16_000,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut buf = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = hound::WavWriter::new(&mut buf, spec)?;
+        for &s in pcm {
+            writer.write_sample((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)?;
+        }
+        writer.finalize()?;
+    }
+    Ok(buf.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::cleanup_max_tokens;

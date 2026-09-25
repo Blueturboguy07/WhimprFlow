@@ -22,16 +22,11 @@ use serde::Serialize;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 const OVERLAY_LABEL: &str = "whimpr_bar";
 const HUB_LABEL: &str = "main";
-
-#[derive(Clone, Serialize)]
-struct BarStatePayload {
-    state: &'static str,
-}
 
 /// Anchor the overlay window bottom-center of its monitor.
 fn position_overlay(w: &WebviewWindow) {
@@ -91,10 +86,6 @@ fn build_hub(app: &tauri::App) -> tauri::Result<WebviewWindow> {
         .min_inner_size(720.0, 480.0)
         .visible(true)
         .build()
-}
-
-fn emit_bar_state(app: &tauri::AppHandle, state: &'static str) {
-    let _ = app.emit_to(OVERLAY_LABEL, "whimpr://flowbar/state", BarStatePayload { state });
 }
 
 #[tauri::command]
@@ -277,6 +268,17 @@ fn set_api_key(provider: String, key: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Show and focus the Hub window, whether it's hidden (closed via the X button,
+/// which we intercept below) or just needs to come to the front. Used by both
+/// the tray's "Open WhimprFlow" item and a relaunch caught by the single-instance
+/// guard (Windows/Linux).
+fn show_hub(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window(HUB_LABEL) {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
 /// (Re)register the customizable hands-free global hotkey from the current
 /// settings — press once to start hands-free dictation, again to stop. Called at
 /// startup and whenever settings change. Best-effort: an unregisterable or empty
@@ -296,7 +298,19 @@ fn apply_hands_free_shortcut(app: &tauri::AppHandle) {
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default();
+    // Relaunching the app (double-clicking the exe/installer shortcut again) must
+    // not spawn a second process — it should just surface the running one. Without
+    // this, every relaunch left a new instance in the taskbar. macOS's Dock already
+    // re-activates the existing instance, so this is Windows/Linux-only.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_hub(app);
+        }));
+    }
+    builder
         .plugin(
             // The customizable hands-free hotkey lives here — the OS registers the
             // chord, so pressing it fires our handler AND is suppressed from the
@@ -347,6 +361,22 @@ pub fn run() {
             let hub = build_hub(app)?;
             let _ = hub.show();
             let _ = hub.set_focus();
+            // Closing the Hub via the X button should hide it (dictation keeps
+            // running from the tray), not destroy the window — otherwise "Open
+            // WhimprFlow" in the tray has nothing left to show. macOS already
+            // keeps the app (and its Dock icon) alive on window close, so this
+            // matters most on Windows/Linux, but is harmless everywhere.
+            hub.on_window_event({
+                let app_handle = app.handle().clone();
+                move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        if let Some(w) = app_handle.get_webview_window(HUB_LABEL) {
+                            let _ = w.hide();
+                        }
+                    }
+                }
+            });
 
             // Wire the Fn key to the pill via the real state machine.
             hotkey::install(app.handle().clone());
@@ -362,25 +392,15 @@ pub fn run() {
             permissions::watch(app.handle().clone());
 
             let open = MenuItem::with_id(app, "open", "Open WhimprFlow", true, None::<&str>)?;
-            let demo_rec =
-                MenuItem::with_id(app, "demo_rec", "Demo: recording", true, None::<&str>)?;
-            let demo_idle = MenuItem::with_id(app, "demo_idle", "Demo: idle", true, None::<&str>)?;
             let sep = PredefinedMenuItem::separator(app)?;
             let quit = MenuItem::with_id(app, "quit", "Quit WhimprFlow", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &demo_rec, &demo_idle, &sep, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &sep, &quit])?;
 
             let mut tray = TrayIconBuilder::new()
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => {
-                        if let Some(w) = app.get_webview_window(HUB_LABEL) {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
-                    "demo_rec" => emit_bar_state(app, "recording"),
-                    "demo_idle" => emit_bar_state(app, "idle"),
+                    "open" => show_hub(app),
                     "quit" => app.exit(0),
                     _ => {}
                 });

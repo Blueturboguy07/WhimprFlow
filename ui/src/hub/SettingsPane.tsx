@@ -12,12 +12,26 @@ import {
   requestInputMonitoring,
   requestMicrophone,
   setApiKey,
+  type AsrMode,
   type CleanupLevel,
   type CleanupMode,
   type PublikStatus,
   type Settings,
   type Status,
 } from "./api";
+
+const ASR_MODES: { value: AsrMode; label: string; hint: string }[] = [
+  {
+    value: "local",
+    label: "Local",
+    hint: "On-device Whisper (offline, needs a downloaded speech model — see Home).",
+  },
+  {
+    value: "cloud",
+    label: "Cloud",
+    hint: "Fast cloud transcription via OpenAI or an OpenAI-compatible API like Groq.",
+  },
+];
 
 // Tier 2 (offered, not preselected): Local is the default; "publik API" is the
 // pre-filled cloud option one tap away, with the cost + data-path notice shown
@@ -161,10 +175,10 @@ function KeyField({
 }: {
   label: string;
   configured: boolean;
-  onSave: (key: string) => void;
+  onSave: (key: string) => Promise<void>;
 }) {
   const [value, setValue] = useState("");
-  const [saved, setSaved] = useState(false);
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   return (
     <div style={{ marginTop: 16 }}>
       <div style={{ fontSize: 13, marginBottom: 7, display: "flex", alignItems: "center", color: theme.textBody }}>
@@ -178,7 +192,7 @@ function KeyField({
           placeholder={configured ? "Enter a new key to replace" : "Paste your API key"}
           onChange={(e) => {
             setValue(e.target.value);
-            setSaved(false);
+            setStatus("idle");
           }}
           style={{
             flex: 1,
@@ -193,16 +207,29 @@ function KeyField({
           }}
         />
         <Button
-          onClick={() => {
-            onSave(value);
-            setValue("");
-            setSaved(true);
+          onClick={async () => {
+            setStatus("saving");
+            try {
+              await onSave(value);
+              setValue("");
+              setStatus("saved");
+            } catch (e) {
+              console.error("save key failed", e);
+              setStatus("error");
+            }
           }}
         >
           Save
         </Button>
       </div>
-      {saved && <div style={{ fontSize: 12, color: theme.accentDeep, marginTop: 6 }}>Saved to keychain ✓</div>}
+      {status === "saved" && (
+        <div style={{ fontSize: 12, color: theme.accentDeep, marginTop: 6 }}>Saved to keychain ✓</div>
+      )}
+      {status === "error" && (
+        <div style={{ fontSize: 12, color: "#e5484d", marginTop: 6 }}>
+          Couldn't save — the OS credential store may be unavailable. Check the app's console output.
+        </div>
+      )}
     </div>
   );
 }
@@ -417,6 +444,71 @@ export function SettingsPane({
       <PageTitle>Settings</PageTitle>
 
       <Card style={{ marginBottom: 16 }}>
+        <SectionTitle sub="Which engine turns your speech into text.">Speech-to-Text</SectionTitle>
+        <Segmented
+          options={ASR_MODES.map((m) => ({ value: m.value, label: m.label }))}
+          value={settings.asr_mode}
+          onChange={(v) => onChange({ ...settings, asr_mode: v })}
+        />
+        <div style={{ color: theme.textMuted, fontSize: 12.5, marginTop: 10 }}>
+          {ASR_MODES.find((m) => m.value === settings.asr_mode)?.hint}
+        </div>
+        {settings.asr_mode === "cloud" && (
+          <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12.5, color: theme.textMuted, marginBottom: 6 }}>
+                Base URL (blank = OpenAI; e.g. https://api.groq.com/openai/v1 for Groq)
+              </div>
+              <input
+                type="text"
+                value={settings.asr_base_url}
+                placeholder="https://api.groq.com/openai/v1"
+                onChange={(e) => onChange({ ...settings, asr_base_url: e.target.value })}
+                style={{
+                  width: "100%",
+                  background: theme.cardBgSubtle,
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: 10,
+                  padding: "9px 12px",
+                  color: theme.textBody,
+                  fontFamily: font.mono,
+                  fontSize: 13,
+                  outline: "none",
+                  boxSizing: "border-box",
+                }}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12.5, color: theme.textMuted, marginBottom: 6 }}>
+                Model (e.g. whisper-large-v3-turbo for Groq, whisper-1 for OpenAI)
+              </div>
+              <input
+                type="text"
+                value={settings.asr_model}
+                placeholder="whisper-large-v3-turbo"
+                onChange={(e) => onChange({ ...settings, asr_model: e.target.value })}
+                style={{
+                  width: "100%",
+                  background: theme.cardBgSubtle,
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: 10,
+                  padding: "9px 12px",
+                  color: theme.textBody,
+                  fontFamily: font.mono,
+                  fontSize: 13,
+                  outline: "none",
+                  boxSizing: "border-box",
+                }}
+              />
+            </div>
+          </div>
+        )}
+        <div style={{ color: theme.textMuted, fontSize: 12.5, marginTop: 10 }}>
+          Cloud speech-to-text reuses the OpenAI API key below.
+        </div>
+      </Card>
+
+      <Card style={{ marginBottom: 16 }}>
         <SectionTitle sub="Where your dictation is cleaned up before it's typed.">Cleanup Engine</SectionTitle>
         <Segmented
           options={MODES.map((m) => ({ value: m.value, label: m.label }))}
@@ -497,8 +589,8 @@ export function SettingsPane({
         <KeyField
           label="OpenAI API key"
           configured={status.has_openai_key}
-          onSave={(k) => {
-            setApiKey("openai", k);
+          onSave={async (k) => {
+            await setApiKey("openai", k);
             setTimeout(refresh, 400);
           }}
         />
@@ -553,8 +645,8 @@ export function SettingsPane({
         <KeyField
           label="Anthropic API key"
           configured={status.has_anthropic_key}
-          onSave={(k) => {
-            setApiKey("anthropic", k);
+          onSave={async (k) => {
+            await setApiKey("anthropic", k);
             setTimeout(refresh, 400);
           }}
         />

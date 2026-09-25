@@ -22,7 +22,7 @@ pub use asr::{AsrEngine, AsrEngineId, Transcript};
 pub use cleanup::{CleanupContext, CleanupLevel, CleanupProvider, ProviderId, VocabEntry};
 pub use diagnostics::{Diagnostic, InjectionFailure, Platform};
 pub use dictionary::{DictSource, DictionaryEntry, DictionaryStore};
-pub use settings::{CleanupMode, Settings, PUBLIK_DISCLOSURE_VERSION};
+pub use settings::{AsrMode, CleanupMode, Settings, PUBLIK_DISCLOSURE_VERSION};
 pub use stats::{HistoryItem, SessionRecord, StatsStore, StatsSummary};
 pub use state::{Action, BarState, DictationState, Input, PipelineEvent, StateMachine, TriggerToken};
 pub use types::{RecordMode, SessionId};
