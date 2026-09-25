@@ -24,7 +24,7 @@ use serde::Serialize;
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 
 const OVERLAY_LABEL: &str = "whimpr_bar";
@@ -100,10 +100,11 @@ fn build_overlay(app: &tauri::App) -> tauri::Result<WebviewWindow> {
     .skip_taskbar(true)
     .focused(false)
     .resizable(false)
-    .visible(true)
+    // Hidden at rest: the pill only exists while WhimprFlow is actually doing
+    // something (recording, cleaning up, flashing done, showing an error). The
+    // tray icon is the idle presence. See `emit_flowbar_state`.
+    .visible(false)
     .build()?;
-    position_overlay(&overlay);
-    let _ = overlay.show();
     Ok(overlay)
 }
 
@@ -114,6 +115,37 @@ fn build_hub(app: &tauri::App) -> tauri::Result<WebviewWindow> {
         .min_inner_size(720.0, 480.0)
         .visible(true)
         .build()
+}
+
+#[derive(Clone, Serialize)]
+struct BarStatePayload {
+    state: &'static str,
+}
+
+/// Bar states where the pill window must exist. Idle (the rest state) hides it —
+/// the overlay is invisible until a dictation actually starts.
+fn bar_visible(state: &str) -> bool {
+    state != "idle"
+}
+
+/// Emit a flow-bar state to the overlay AND toggle its window visibility.
+///
+/// The single choke point every bar-state producer goes through (the macOS
+/// state machine in `hotkey.rs`, the Windows pipeline in `win.rs`, and the
+/// diagnostics path in `diag.rs`), so the pill's on-screen existence can
+/// never drift out of sync with the state it shows.
+pub fn emit_flowbar_state(app: &tauri::AppHandle, state: &'static str) {
+    let _ = app.emit_to(OVERLAY_LABEL, "whimpr://flowbar/state", BarStatePayload { state });
+    if let Some(w) = app.get_webview_window(OVERLAY_LABEL) {
+        if bar_visible(state) {
+            // Re-anchor right before showing: the window may have never been
+            // mapped, or the screen layout may have changed while hidden.
+            position_overlay(&w);
+            let _ = w.show();
+        } else {
+            let _ = w.hide();
+        }
+    }
 }
 
 #[tauri::command]

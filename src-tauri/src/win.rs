@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::ProcessStatus::GetModuleBaseNameW;
@@ -34,7 +34,6 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use whimpr_core::{AsrEngine, CleanupContext, CleanupMode, CleanupProvider, StatsSummary};
 
-const OVERLAY_LABEL: &str = "whimpr_bar";
 /// Push-to-talk key. Right Ctrl by default (Ctrl+Win chords land in a later pass).
 const PTT_VK: u16 = VK_RCONTROL.0;
 
@@ -81,11 +80,8 @@ fn now_ms() -> u64 {
 
 fn emit_bar(state: &'static str) {
     if let Some(app) = APP.get() {
-        #[derive(Clone, serde::Serialize)]
-        struct P {
-            state: &'static str,
-        }
-        let _ = app.emit_to(OVERLAY_LABEL, "whimpr://flowbar/state", P { state });
+        // Shared emitter: also toggles the overlay window (hidden at idle).
+        crate::emit_flowbar_state(app, state);
     }
 }
 
