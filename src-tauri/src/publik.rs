@@ -45,12 +45,17 @@ pub const CTA_LINK_AND_PICK: &str = "Link this computer & pick a plan";
 pub const CTA_PICK_PLAN: &str = "Pick a plan";
 /// The settings card's primary button once the computer is claimed.
 pub const CTA_MANAGE_PLAN: &str = "Manage plan";
-/// The first-run card's secondary button: keep the free starter, change nothing.
+/// The first-run card's secondary button: change nothing.
 pub const CTA_LATER: &str = "Later";
-/// The gateway's documented anonymous starter (CONTRACT §5), used only as the
-/// denominator of the "running low" check when the grant is unknown. The
-/// balance line itself always comes from the response.
-const DOCUMENTED_STARTER_MICROS: i64 = 250_000;
+/// The one free thing since publik migration 0059 (founder, 2026-09-28): $0.05
+/// of use, paid once per publik account when a computer is linked. A new
+/// computer starts at $0.00, so an install minted without an account records a
+/// grant of 0. Used only as the denominator of the "running low" check when the
+/// grant is unknown. The balance line itself always comes from the response.
+const DOCUMENTED_STARTER_MICROS: i64 = 50_000;
+/// The first-run card's balance line while this computer is not linked and its
+/// balance is $0.00 — every new install since publik migration 0059.
+pub const LINK_STARTER_LINE: &str = "$0.00 · link this computer for $0.05 of free use";
 /// "Running low" = less than a fifth of the starter grant left.
 const LOW_STARTER_NUM: i64 = 1;
 const LOW_STARTER_DEN: i64 = 5;
@@ -138,7 +143,8 @@ pub struct PublikStatus {
 /// order: the balance line, the justification, the primary button, "Later".
 #[derive(Clone, Serialize, Debug, PartialEq, Eq)]
 pub struct FirstRunCard {
-    /// "$0.25 of free starter usage" — from the mint response, never a constant.
+    /// [`LINK_STARTER_LINE`] for a new computer, "$0.05 on your publik balance"
+    /// once there is money on it — from the mint response, never a constant.
     pub balance_line: String,
     pub justification: String,
     /// [`CTA_LINK_AND_PICK`].
@@ -312,16 +318,33 @@ pub fn adopt_provisioned(store: &dyn KeyStore, settings: &mut Settings, p: &Prov
 
 // ── The card, the button, the banner (pure, so they are tested) ──────────────
 
-/// "$0.25 of free starter usage".
-pub fn starter_line(micros: i64) -> String {
-    format!("{} of free starter usage", fmt_usd(micros.max(0)))
+/// "$0.00" for an empty balance, else [`fmt_usd`] ("$0.0004", "$1.23").
+fn fmt_balance(micros: i64) -> String {
+    if micros <= 0 {
+        "$0.00".to_string()
+    } else {
+        fmt_usd(micros)
+    }
+}
+
+/// The first-run card's balance line. A new computer starts at $0.00: while it
+/// is not linked, the line says how to get the one free thing
+/// ([`LINK_STARTER_LINE`]). Any other balance is stated as it is and never
+/// called free — it can be a plan or a pack.
+pub fn starter_line(micros: i64, claimed: bool) -> String {
+    if micros <= 0 && !claimed {
+        LINK_STARTER_LINE.to_string()
+    } else {
+        format!("{} on your publik balance", fmt_balance(micros))
+    }
 }
 
 /// The first-run card from the mint response: balance from the response,
 /// the one justification, the primary button on `claim_url`, "Later".
 pub fn first_run_card(p: &Provisioned) -> FirstRunCard {
+    let claim_state = p.claim_state.as_deref().or_else(|| p.wallet.as_ref().and_then(|w| w["claim_state"].as_str()));
     FirstRunCard {
-        balance_line: starter_line(p.starting_balance_micros()),
+        balance_line: starter_line(p.starting_balance_micros(), claim_state == Some("claimed")),
         justification: WHY_IT_COSTS.to_string(),
         cta_label: CTA_LINK_AND_PICK.to_string(),
         claim_url: api::publik_link(p.claim_url.as_deref()),
@@ -345,8 +368,9 @@ pub fn plan_cta(claim_state: Option<&str>, claim_url: Option<&str>) -> PlanCta {
     }
 }
 
-/// Below a fifth of the starter grant left → the banner, with the wallet's
-/// one link. `granted` 0 = unknown, the documented anonymous starter applies.
+/// Below a fifth of the free use granted → the banner, with the wallet's one
+/// link. `granted` 0 = unknown (every install minted without an account since
+/// publik migration 0059): the $0.05 link grant applies.
 pub fn low_starter_notice(remaining: i64, granted: i64, top_up_url: Option<&str>) -> Option<PublikNotice> {
     let granted = if granted > 0 { granted } else { DOCUMENTED_STARTER_MICROS };
     if remaining <= 0 || remaining * LOW_STARTER_DEN >= granted * LOW_STARTER_NUM {
@@ -355,9 +379,9 @@ pub fn low_starter_notice(remaining: i64, granted: i64, top_up_url: Option<&str>
     let link_url = api::publik_link(top_up_url).unwrap_or_else(|| api::DASHBOARD_URL.to_string());
     Some(PublikNotice {
         kind: "low_starter".to_string(),
-        headline: "publik API starter is running low".to_string(),
+        headline: "publik API free use is running low".to_string(),
         message: format!(
-            "{} of your free starter usage is left. {WHY_IT_COSTS} Pick a plan or a pack to keep cloud cleanup going, or use Local or your own key.",
+            "{} of your free use is left. {WHY_IT_COSTS} Pick a plan or a pack to keep cloud cleanup going, or use Local or your own key.",
             fmt_usd(remaining)
         ),
         link_label: "Pick a plan".to_string(),
@@ -367,10 +391,12 @@ pub fn low_starter_notice(remaining: i64, granted: i64, top_up_url: Option<&str>
 
 /// The 402 banner: the gateway's message (it already says what the link
 /// does) plus exactly one link, `top_up_url`, then what the app does about it.
+/// A computer that is not linked starts at $0.00, so its headline asks for a
+/// balance (linking gives $0.05 of free use, once), not only a plan or a pack.
 pub fn exhausted_notice(message: &str, claim_state: Option<&str>, link: &str) -> PublikNotice {
     PublikNotice {
         kind: "exhausted".to_string(),
-        headline: "publik API needs a plan or a pack".to_string(),
+        headline: if claim_state == Some("claimed") { "publik API needs a plan or a pack" } else { "publik API needs a balance" }.to_string(),
         message: format!(
             "{} Dictation still works; text is pasted without cleanup — or use Local or your own key under Settings → Cleanup Engine.",
             message.trim()
@@ -480,7 +506,7 @@ fn provision_now() -> Result<(), String> {
 
 fn set_balance_locked(s: &mut PublikStatus, micros: i64, charge: Option<i64>) {
     s.balance_micros = Some(micros);
-    s.balance_label = Some(format!("{} left", fmt_usd(micros)));
+    s.balance_label = Some(format!("{} left", fmt_balance(micros)));
     if let Some(c) = charge {
         s.last_charge_label = Some(format!("last cleanup {}", fmt_usd(c)));
     }
@@ -636,7 +662,7 @@ pub fn forget_key() {
     s.last_charge_label = None;
     s.week_label = None;
     s.exhausted = false;
-    // No key, no starter to spend: nothing is owed and nothing is running low.
+    // No key, no balance to spend: nothing is owed and nothing is running low.
     s.first_run = None;
     s.notice = None;
     let mut settings = crate::hotkey::current_settings();
@@ -749,7 +775,10 @@ fn snapshot() -> PublikStatus {
     // rebuild it from what was persisted, with the freshest balance known.
     if s.first_run.is_none() && settings.publik_cta_pending && s.has_key {
         s.first_run = Some(FirstRunCard {
-            balance_line: starter_line(s.balance_micros.unwrap_or(settings.publik_starter_micros)),
+            balance_line: starter_line(
+                s.balance_micros.unwrap_or(settings.publik_starter_micros),
+                s.claim_state.as_deref() == Some("claimed"),
+            ),
             justification: WHY_IT_COSTS.to_string(),
             cta_label: CTA_LINK_AND_PICK.to_string(),
             claim_url: s.claim_url.clone(),
@@ -894,11 +923,13 @@ mod tests {
         }
     }
 
+    /// A 201 under publik migration 0059: a new computer starts at $0.00.
     fn minted() -> Provisioned {
         serde_json::from_str(
             r#"{"install_id":"3f1c9b5e-7a2d-4c8e-9f0b-1d2e3f4a5b6c","key":"pk_live_a8k2m9x4q7v1_h3n6r9t2w5y8z1b4c7d0f3g6j9k2m5p8",
                 "base_url":"https://api.publikhq.com/v1/","models":{"fast":"publik-fast"},
-                "claim_url":"https://publikhq.com/claim/HK7F-2QWD","balance_micros":250000}"#,
+                "claim_url":"https://publikhq.com/claim/HK7F-2QWD","starter_micros":0,"balance_micros":0,
+                "wallet":{"balance_micros":0,"claim_state":"anonymous"}}"#,
         )
         .unwrap()
     }
@@ -996,9 +1027,11 @@ mod tests {
 
     #[test]
     fn the_402_notice_renders_the_message_and_exactly_one_link() {
-        let msg = "Not enough publik credit for this request. Link this computer and pick a plan at the link below, or use your own key.";
+        // The gateway's anonymous 402 message since publik migration 0059.
+        let msg = "Your publik balance is too low for this request. Link this computer to your publik account at the link below for $0.05 of free use, pick a plan there, or use your own key.";
         let n = exhausted_notice(msg, Some("anonymous"), "https://publikhq.com/claim/HK7F-2QWD");
         assert_eq!(n.kind, "exhausted");
+        assert_eq!(n.headline, "publik API needs a balance");
         assert!(n.message.starts_with(msg), "{}", n.message);
         // The message carries no URL of its own; the one link is the field.
         assert_eq!(n.message.matches("http").count(), 0, "{}", n.message);
@@ -1009,6 +1042,7 @@ mod tests {
         let claimed = exhausted_notice("m", Some("claimed"), "https://publikhq.com/dashboard/api/add");
         assert_eq!(claimed.link_url, "https://publikhq.com/dashboard/api/add");
         assert_eq!(claimed.link_label, "Add a plan or pack");
+        assert_eq!(claimed.headline, "publik API needs a plan or a pack");
 
         // A 402 whose top_up_url is off publikhq.com is not followed: the
         // dashboard is the one link instead.
@@ -1022,13 +1056,25 @@ mod tests {
     fn the_first_run_card_carries_the_responses_balance_and_claim_url() {
         let p = minted();
         let card = first_run_card(&p);
-        // (a) the balance line comes from the response, in dollars.
-        assert_eq!(card.balance_line, "$0.25 of free starter usage");
-        let ten_cents: Provisioned = serde_json::from_str(r#"{"key":"pk_live_x","starter_micros":100000,"claim_url":"https://publikhq.com/claim/AAAA-BBBB"}"#).unwrap();
-        assert_eq!(first_run_card(&ten_cents).balance_line, "$0.10 of free starter usage");
+        // (a) the balance line comes from the response, in dollars. A new
+        // computer starts at $0.00, and the line says how to get the one free
+        // thing — never "$0.0000 of free starter usage".
+        assert_eq!(card.balance_line, "$0.00 · link this computer for $0.05 of free use");
+        assert_eq!(card.balance_line, LINK_STARTER_LINE);
+        // Minted already bound to an account: the $0.05 link grant, stated as a balance.
+        let bound: Provisioned = serde_json::from_str(
+            r#"{"key":"pk_live_x","starter_micros":50000,"balance_micros":50000,"wallet":{"balance_micros":50000,"claim_state":"claimed"}}"#,
+        )
+        .unwrap();
+        assert_eq!(first_run_card(&bound).balance_line, "$0.05 on your publik balance");
+        // Linked but empty (the account's $0.05 was used on another computer):
+        // no promise of free use, because linking again gives nothing.
+        assert_eq!(starter_line(0, true), "$0.00 on your publik balance");
+        // Money that may be a plan or a pack is never called free.
+        assert_eq!(starter_line(100_000, false), "$0.10 on your publik balance");
         // (b) the one justification, verbatim.
         assert_eq!(card.justification, WHY_IT_COSTS);
-        // (c) the primary button opens the response's claim_url; "Later" keeps the starter.
+        // (c) the primary button opens the response's claim_url; "Later" changes nothing.
         assert_eq!(card.cta_label, "Link this computer & pick a plan");
         assert_eq!(card.claim_url.as_deref(), Some("https://publikhq.com/claim/HK7F-2QWD"));
         assert_eq!(card.later_label, "Later");
@@ -1063,9 +1109,9 @@ mod tests {
         assert!(cta.claimed);
 
         // The low-starter banner's one link, likewise.
-        let n = low_starter_notice(10_000, 250_000, Some("https://not-publik.example/x")).unwrap();
+        let n = low_starter_notice(5_000, 50_000, Some("https://not-publik.example/x")).unwrap();
         assert_eq!(n.link_url, api::DASHBOARD_URL);
-        let n = low_starter_notice(10_000, 250_000, Some("https://publikhq.com/claim/HK7F-2QWD")).unwrap();
+        let n = low_starter_notice(5_000, 50_000, Some("https://publikhq.com/claim/HK7F-2QWD")).unwrap();
         assert_eq!(n.link_url, "https://publikhq.com/claim/HK7F-2QWD");
         for u in [cta.url.as_str(), n.link_url.as_str()] {
             assert!(u.starts_with(api::LINK_HOST_PREFIX), "{u}");
@@ -1078,9 +1124,10 @@ mod tests {
         let mut settings = Settings::default();
         let (k, p) = ensure_key_with(None, &store, None, &mut settings, |_| Ok(minted())).unwrap();
         let card = first_run_card(p.as_ref().unwrap());
-        // Provisioning owes the card and remembers the grant.
+        // Provisioning owes the card and remembers the grant: $0.00 for a new
+        // computer (publik migration 0059).
         assert!(settings.publik_cta_pending);
-        assert_eq!(settings.publik_starter_micros, 250_000);
+        assert_eq!(settings.publik_starter_micros, 0);
         assert_eq!(card.claim_url.as_deref(), Some("https://publikhq.com/claim/HK7F-2QWD"));
 
         let before_store = store.0.borrow().clone();
@@ -1094,26 +1141,31 @@ mod tests {
         assert_eq!(store.get_raw(ACCOUNT).as_deref(), Some(k.as_str()), "the publik key is still there");
         assert_eq!(settings.cleanup_mode, before_mode);
         assert_eq!(settings.publik_claim_url, before_claim, "the claim link is kept for the settings button");
-        assert_eq!(settings.publik_starter_micros, 250_000);
+        assert_eq!(settings.publik_starter_micros, 0);
         assert_eq!(settings.publik_disclosure_version, PUBLIK_DISCLOSURE_VERSION);
     }
 
     #[test]
     fn the_starter_banner_appears_below_a_fifth_and_only_then() {
-        // 20% of $0.25 is $0.05: at or above it, nothing; below it, the banner.
-        assert!(low_starter_notice(50_000, 250_000, None).is_none());
-        assert!(low_starter_notice(250_000, 250_000, None).is_none());
-        let n = low_starter_notice(49_999, 250_000, None).unwrap();
+        // 20% of the $0.05 link grant is $0.01: at or above it, nothing; below it, the banner.
+        assert!(low_starter_notice(10_000, 50_000, None).is_none());
+        assert!(low_starter_notice(50_000, 50_000, None).is_none());
+        let n = low_starter_notice(9_000, 50_000, None).unwrap();
         assert_eq!(n.kind, "low_starter");
-        assert!(n.message.starts_with("$0.05 of your free starter usage is left."), "{}", n.message);
+        assert_eq!(n.headline, "publik API free use is running low");
+        assert!(n.message.starts_with("$0.0090 of your free use is left."), "{}", n.message);
         assert!(n.message.contains(WHY_IT_COSTS));
         assert_eq!(n.message.matches("http").count(), 0, "the one link is the field, not the text");
         assert_eq!(n.link_url, api::DASHBOARD_URL);
         // Nothing left is the 402's job, not this banner's.
-        assert!(low_starter_notice(0, 250_000, None).is_none());
-        // An unknown grant falls back to the documented anonymous starter.
-        assert!(low_starter_notice(60_000, 0, None).is_none());
-        assert!(low_starter_notice(40_000, 0, None).is_some());
+        assert!(low_starter_notice(0, 50_000, None).is_none());
+        // A new computer at $0.00 has no free use to run low on.
+        assert!(low_starter_notice(0, 0, None).is_none());
+        // An unknown grant (0: minted without an account) falls back to the $0.05 link grant.
+        assert!(low_starter_notice(10_000, 0, None).is_none());
+        assert!(low_starter_notice(9_000, 0, None).is_some());
+        // A grant recorded before publik migration 0059 keeps its own size.
+        assert!(low_starter_notice(40_000, 250_000, None).is_some());
     }
 
     /// The copy rule on the CTA surfaces specifically (CONTRACT §12.5): the
@@ -1123,8 +1175,8 @@ mod tests {
     fn cta_copy_says_publik_api_in_dollars_and_never_credits() {
         let p = minted();
         let card = first_run_card(&p);
-        let n = exhausted_notice("Not enough publik credit for this request.", Some("anonymous"), "https://publikhq.com/claim/HK7F-2QWD");
-        let low = low_starter_notice(10_000, 250_000, None).unwrap();
+        let n = exhausted_notice("Your publik balance is too low for this request. Link this computer to your publik account at the link below for $0.05 of free use, pick a plan there, or use your own key.", Some("anonymous"), "https://publikhq.com/claim/HK7F-2QWD");
+        let low = low_starter_notice(5_000, 50_000, None).unwrap();
         let pick = plan_cta(Some("anonymous"), None);
         let manage = plan_cta(Some("claimed"), None);
         let texts = [
@@ -1150,6 +1202,7 @@ mod tests {
             assert!(!lower.contains("token"), "tokens, not dollars, in: {t}");
             assert!(!lower.contains("openai") && !lower.contains("anthropic"), "provider named in: {t}");
             assert!(!lower.contains("publik credits") && !lower.contains("publik api credits"), "{t}");
+            assert!(!lower.contains("free starter"), "pre-0059 starter promise in: {t}");
         }
         assert!(card.balance_line.starts_with('$'));
         assert!(card.justification.contains("half the provider's list price"));
@@ -1183,6 +1236,9 @@ mod tests {
         }
         assert!(files.iter().any(|f| f.ends_with("CloudDisclosure.tsx")), "the disclosure card must exist");
         let forbidden = ["OpenAI API access", "ChatGPT credits", "ChatGPT credit"];
+        // The promises publik migration 0059 (founder, 2026-09-28) retired: a new
+        // computer starts at $0.00; the one free thing is $0.05 for linking it, once.
+        let old_policy = ["free starter", "first $0.25", "$0.25 is free", "starts with free", "small free balance"];
         let per_token = ["per token", "/token", "per 1M tokens", "per million tokens", "/1M tokens"];
         for f in files {
             let text = std::fs::read_to_string(&f).unwrap_or_else(|e| panic!("{}: {e}", f.display()));
@@ -1198,6 +1254,9 @@ mod tests {
                 }
                 // "credits" as a unit ("500 credits", "buy credits"); "credit" singular is the contract's own word.
                 let lower = line.to_ascii_lowercase();
+                for bad in old_policy {
+                    assert!(!lower.contains(bad), "{}: pre-0059 starter promise {bad:?} in: {line}", f.display());
+                }
                 assert!(!lower.contains("credits"), "{}: 'credits' as a unit in: {line}", f.display());
                 if line.contains('$') {
                     for bad in per_token {

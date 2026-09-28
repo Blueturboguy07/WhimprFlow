@@ -7,6 +7,9 @@ import { publikOpenLink } from "./api";
 // adapted for a Tier-2 app where Local stays the default and the user has
 // just tapped "publik API" in the picker). Two disclosures, two paragraphs.
 // Nothing is minted until "Turn on publik API" — that tap is the consent.
+// A new computer starts at $0.00 (publik migration 0059, founder 2026-09-28):
+// the one free thing is $0.05 of use when it is linked to a publik account,
+// once per account, so this card promises nothing else.
 // No hourly-cost figure by design (R25 S17): the rate and the monthly line.
 export function CloudDisclosure({
   onAccept,
@@ -27,13 +30,14 @@ export function CloudDisclosure({
     <Card style={{ marginTop: 12, border: `1px solid ${theme.accentSoftBorder}`, background: theme.accentSoft }}>
       <div style={{ fontSize: 15, fontWeight: 600, color: theme.textStrong }}>Turn on publik API cleanup?</div>
       <p style={{ color: theme.textBody, fontSize: 13, lineHeight: 1.5, margin: "8px 0 0" }}>
-        WhimprFlow can clean up your dictation in the cloud on <b>publik API</b>, already set up — no account and no key
-        needed. Local stays your default until you turn this on.
+        WhimprFlow can clean up your dictation in the cloud on <b>publik API</b>, already set up — no key needed. Local
+        stays your default until you turn this on.
       </p>
       <p style={{ color: theme.textBody, fontSize: 13, lineHeight: 1.5, margin: "8px 0 0" }}>
         <b>Cost.</b> Every request is priced per use at 50% of the model's published list price, from your publik balance.
-        Your first $0.25 is free. Most people spend under $2 a month. You can see every charge in the app and at
-        publikhq.com.
+        Your balance starts at $0.00. Linking this computer to your publik account gives $0.05 of free use, once; a plan,
+        a pack or your own key takes it from there. Most people spend under $2 a month. You can see every charge in the
+        app and at publikhq.com.
       </p>
       <p style={{ color: theme.textBody, fontSize: 13, lineHeight: 1.5, margin: "8px 0 0" }}>
         <b>Where your words go.</b> Your transcript — never audio — goes through publik's servers to a shared model

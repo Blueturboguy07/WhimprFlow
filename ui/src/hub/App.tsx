@@ -46,7 +46,7 @@ import {
 // src-tauri). Without this, a permission revoked (or a hotkey tap that died)
 // mid-session was previously invisible outside the terminal — see the
 // "text is not writing where the cursor is" bug reports.
-// The publik API banner (CONTRACT §12.3): a 402, or the free starter running
+// The publik API banner (CONTRACT §12.3): a 402, or the free use running
 // low. Non-blocking — dictation goes on, raw text is pasted — with the message
 // from the response and exactly one link (`top_up_url`), resolved in Rust.
 function PublikBanner({ notice, onDismiss }: { notice: PublikNotice; onDismiss: () => void }) {

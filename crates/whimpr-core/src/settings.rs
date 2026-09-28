@@ -160,9 +160,12 @@ pub struct Settings {
     /// Empty once claimed or before provisioning.
     #[serde(default)]
     pub publik_claim_url: String,
-    /// Free starter usage granted by `POST /installs` (`starter_micros`), kept
-    /// so the "starter running low" banner knows what 20% of it is. 0 = unknown
-    /// (the gateway's documented anonymous starter is assumed).
+    /// Free use granted by `POST /installs` (`starter_micros`), kept so the
+    /// "running low" banner knows what 20% of it is. Since publik migration
+    /// 0059 (founder, 2026-09-28) a new computer starts at $0.00, so this is 0
+    /// for every install minted without an account; the one free thing is
+    /// $0.05 of use when the computer is linked to a publik account, once per
+    /// account. 0 also means "unknown": the banner then assumes that $0.05.
     #[serde(default)]
     pub publik_starter_micros: i64,
     /// The first-run publik card (balance line, why it costs money, "Link this
@@ -401,7 +404,8 @@ mod tests {
             publik_disclosure_version: PUBLIK_DISCLOSURE_VERSION,
             publik_install_id: "3f1c9b5e-7a2d-4c8e-9f0b-1d2e3f4a5b6c".to_string(),
             publik_base_url: "https://publikhq.com/api/v1".to_string(),
-            publik_starter_micros: 250_000,
+            // An install minted already bound to an account: the one $0.05 grant.
+            publik_starter_micros: 50_000,
             publik_cta_pending: true,
             ..Default::default()
         };
@@ -411,7 +415,7 @@ mod tests {
         assert_eq!(back.cleanup_mode, CleanupMode::Publik);
         assert_eq!(back.publik_install_id, s.publik_install_id);
         assert_eq!(back.publik_base_url, s.publik_base_url);
-        assert_eq!(back.publik_starter_micros, 250_000);
+        assert_eq!(back.publik_starter_micros, 50_000);
         assert!(back.publik_cta_pending, "the owed first-run card survives a relaunch");
     }
 
