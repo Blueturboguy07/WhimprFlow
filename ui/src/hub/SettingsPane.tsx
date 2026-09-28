@@ -296,10 +296,10 @@ function PublikCard({
       </div>
       {publik.has_key && publik.exhausted && (
         <div style={{ fontSize: 12.5, color: palette.error, marginTop: 6 }}>
-          <b>publik API needs a plan or a pack.</b>{" "}
+          <b>{anonymous ? "publik API needs a balance." : "publik API needs a plan or a pack."}</b>{" "}
           {anonymous
-            ? "Your free starter usage is used up. Link this computer and pick a plan, or use your own key."
-            : "Your plan or pack is used up. Add a plan or a pack, or use your own key."}{" "}
+            ? "Link this computer to your publik account for $0.05 of free use, once, pick a plan, or use your own key."
+            : "Your publik balance is too low. Add a plan or a pack, or use your own key."}{" "}
           Dictation still works — text is pasted without cleanup.
         </div>
       )}

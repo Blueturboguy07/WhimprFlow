@@ -8,7 +8,8 @@ import { publikDismissFirstRun, publikOpenLink, type FirstRunCard, type PublikSt
 // everywhere: (a) the balance line from the mint response, (b) the one
 // justification sentence, (c) "Link this computer & pick a plan" on the
 // response's claim_url (publikhq.com only — Rust refuses anything else), with
-// "Later" keeping the free starter and changing nothing.
+// "Later" changing nothing. A new computer starts at $0.00, so the balance line
+// then says how to get the one free thing: $0.05 of use for linking it, once.
 //
 // Never a silent starter (§12.4): the card stays owed — across relaunches —
 // until one of its two buttons is tapped.
@@ -34,7 +35,8 @@ export function PublikFirstRun({ card, onSettled }: { card: FirstRunCard; onSett
         </Button>
       </div>
       <div style={{ fontSize: 12, color: theme.textMuted, marginTop: 10 }}>
-        "{card.later_label}" keeps the free starter; you can pick a plan any time from this card in Settings.
+        "{card.later_label}" changes nothing; you can link this computer or pick a plan any time from this card in
+        Settings.
       </div>
     </Card>
   );

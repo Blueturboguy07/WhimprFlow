@@ -311,7 +311,7 @@ export interface PublikStatus {
   justification: string;
   // The settings card's primary button (CONTRACT §12.2).
   plan_cta: PlanCta;
-  // The non-blocking banner: a 402, or the free starter running low.
+  // The non-blocking banner: a 402, or the free use running low.
   notice: PublikNotice | null;
 }
 

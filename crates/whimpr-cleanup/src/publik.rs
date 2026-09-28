@@ -653,7 +653,7 @@ mod tests {
         assert_eq!(fmt_usd(412), "$0.0004");
         assert_eq!(fmt_usd(4_870_000), "$4.87");
         assert_eq!(fmt_usd(0), "$0.0000");
-        assert_eq!(fmt_usd(250_000), "$0.25");
+        assert_eq!(fmt_usd(50_000), "$0.05");
     }
 
     #[test]
@@ -806,6 +806,8 @@ mod tests {
         h.join().unwrap();
     }
 
+    /// A fresh mint since publik migration 0059 (founder, 2026-09-28): a new
+    /// computer starts at $0.00; $0.05 of free use comes only from linking it.
     const BODY_201: &str = r#"{
         "install_id": "3f1c9b5e-7a2d-4c8e-9f0b-1d2e3f4a5b6c",
         "key": "pk_live_a8k2m9x4q7v1_h3n6r9t2w5y8z1b4c7d0f3g6j9k2m5p8",
@@ -816,10 +818,10 @@ mod tests {
         "claim_code": "HK7F-2QWD",
         "claim_url": "https://publikhq.com/claim/HK7F-2QWD",
         "claim_expires_at": "2026-10-18T17:04:11Z",
-        "starter_micros": 250000,
-        "balance_micros": 250000,
-        "starting_credit_micros": 250000,
-        "wallet": { "balance_micros": 250000, "claim_state": "anonymous" },
+        "starter_micros": 0,
+        "balance_micros": 0,
+        "starting_credit_micros": 0,
+        "wallet": { "balance_micros": 0, "claim_state": "anonymous" },
         "disclosure": { "version": 1, "cost": "…", "data_path": "…" }
     }"#;
 
@@ -862,7 +864,29 @@ mod tests {
         assert_eq!(p.base_url.as_deref(), Some("https://publikhq.com/api/v1"));
         assert_eq!(p.models.as_ref().unwrap().fast.as_deref(), Some("publik-fast"));
         assert_eq!(p.claim_url.as_deref(), Some("https://publikhq.com/claim/HK7F-2QWD"));
-        assert_eq!(p.starting_balance_micros(), 250_000);
+        assert_eq!(p.starter_micros, Some(0));
+        assert_eq!(p.balance_micros, Some(0));
+        assert_eq!(p.starting_balance_micros(), 0);
+    }
+
+    #[test]
+    fn starting_balance_reads_the_mint_fields_in_order() {
+        // An install minted already bound to a signed-in account gets the one
+        // $0.05 link grant (publik migration 0059).
+        let bound: Provisioned = serde_json::from_str(
+            r#"{"key":"pk_live_x","starter_micros":50000,"balance_micros":50000,"wallet":{"balance_micros":50000,"claim_state":"claimed"}}"#,
+        )
+        .unwrap();
+        assert_eq!(bound.starting_balance_micros(), 50_000);
+        // balance_micros, else starting_credit_micros, else starter_micros, else the wallet's balance.
+        let p: Provisioned = serde_json::from_str(r#"{"starting_credit_micros":50000,"starter_micros":1}"#).unwrap();
+        assert_eq!(p.starting_balance_micros(), 50_000);
+        let p: Provisioned = serde_json::from_str(r#"{"starter_micros":50000}"#).unwrap();
+        assert_eq!(p.starting_balance_micros(), 50_000);
+        let p: Provisioned = serde_json::from_str(r#"{"wallet":{"balance_micros":50000}}"#).unwrap();
+        assert_eq!(p.starting_balance_micros(), 50_000);
+        let p: Provisioned = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(p.starting_balance_micros(), 0);
     }
 
     #[test]
@@ -898,14 +922,15 @@ mod tests {
 
     #[test]
     fn fetch_wallet_parses_the_contract_shape() {
+        // A linked computer part-way through the one $0.05 link grant
+        // (publik migration 0059: a computer that is not linked has no starter).
         let body = r#"{
-            "install_id":"3f1c9b5e-…","app_slug":"whimprflow","claim_state":"anonymous",
-            "balance_micros":181240,
-            "starter":{"remaining_micros":181240,"expires_at":"2026-10-18T17:04:11Z"},
+            "install_id":"3f1c9b5e-…","app_slug":"whimprflow","claim_state":"claimed",
+            "balance_micros":31240,
+            "starter":{"remaining_micros":31240,"expires_at":"2026-10-18T17:04:11Z"},
             "plan":{"id":"none","label":"No plan","monthly_micros":0},
-            "week":{"used_micros":68760,"budget_micros":null,"resets_at":"2026-09-25T17:04:11Z","window_days":7},
-            "daily_cap_micros":250000,"spent_today_micros":68760,
-            "claim_code":"HK7F-2QWD","claim_url":"https://publikhq.com/claim/HK7F-2QWD",
+            "week":{"used_micros":18760,"budget_micros":null,"resets_at":"2026-09-25T17:04:11Z","window_days":7},
+            "daily_cap_micros":250000,"spent_today_micros":18760,
             "add_credit_url":"https://publikhq.com/dashboard/api/add","plans_url":"https://publikhq.com/developers#plans"
         }"#;
         let (url, h) = fake_server(200, &[], body);
@@ -913,13 +938,26 @@ mod tests {
         let captured = h.join().unwrap();
         assert!(captured.request_line.starts_with("GET /wallet "), "{}", captured.request_line);
         assert_eq!(captured.header("authorization"), Some("Bearer pk_live_abc"));
-        assert_eq!(w.balance_micros, 181_240);
-        assert_eq!(w.claim_state.as_deref(), Some("anonymous"));
-        assert_eq!(w.claim_url.as_deref(), Some("https://publikhq.com/claim/HK7F-2QWD"));
-        assert_eq!(w.week_used_micros, Some(68_760));
+        assert_eq!(w.balance_micros, 31_240);
+        assert_eq!(w.claim_state.as_deref(), Some("claimed"));
+        assert_eq!(w.claim_url, None);
+        assert_eq!(w.add_credit_url.as_deref(), Some("https://publikhq.com/dashboard/api/add"));
+        assert_eq!(w.week_used_micros, Some(18_760));
         assert_eq!(w.week_budget_micros, None);
-        assert_eq!(w.starter_remaining_micros, Some(181_240));
+        assert_eq!(w.starter_remaining_micros, Some(31_240));
         assert_eq!(w.daily_cap_micros, Some(250_000));
+        assert_eq!(w.spent_today_micros, Some(18_760));
+
+        // A new computer that is not linked: $0.00, no starter, the claim link.
+        let fresh = parse_wallet(&serde_json::json!({
+            "balance_micros": 0, "claim_state": "anonymous",
+            "claim_code": "HK7F-2QWD", "claim_url": "https://publikhq.com/claim/HK7F-2QWD"
+        }))
+        .unwrap();
+        assert_eq!(fresh.balance_micros, 0);
+        assert_eq!(fresh.claim_state.as_deref(), Some("anonymous"));
+        assert_eq!(fresh.claim_url.as_deref(), Some("https://publikhq.com/claim/HK7F-2QWD"));
+        assert_eq!(fresh.starter_remaining_micros, None);
 
         // The /balance alias shape (available_micros) is accepted too.
         let alias = parse_wallet(&serde_json::json!({"available_micros": 7, "top_up_url": "https://publikhq.com/claim/X"})).unwrap();
