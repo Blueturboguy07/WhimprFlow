@@ -33,6 +33,9 @@ pub enum InjectionFailure {
     /// Audio capture produced (near-)silence — the mic is muted, the wrong
     /// input device is selected, or OS mic permission is blocking the stream.
     NoAudioCaptured,
+    /// The OS reports no input device at all, so the capture never started
+    /// (cpal: "no default input device").
+    NoInputDevice,
     /// Real audio came in, but the ASR engine returned an empty transcript.
     EmptyTranscript,
     /// No speech model is loaded: none is on disk (or in the app bundle), or
@@ -114,6 +117,18 @@ impl InjectionFailure {
                     Microphone allows desktop apps, and that the right input device is selected."
                     .into(),
             },
+            (NoInputDevice, MacOs) => Diagnostic {
+                headline: "No microphone found".into(),
+                detail: "macOS reports no input device, so nothing was recorded. Connect or \
+                    select a microphone under System Settings → Sound → Input, then try again."
+                    .into(),
+            },
+            (NoInputDevice, Windows) => Diagnostic {
+                headline: "No microphone found".into(),
+                detail: "Windows reports no input device, so nothing was recorded. Plug in or \
+                    enable a microphone under Settings → System → Sound → Input, then try again."
+                    .into(),
+            },
             (EmptyTranscript, _) => Diagnostic {
                 headline: "Didn't catch that".into(),
                 detail: "WhimprFlow heard audio but transcribed no words — try speaking a bit \
@@ -141,11 +156,12 @@ impl InjectionFailure {
 mod tests {
     use super::*;
 
-    const ALL_FAILURES: [InjectionFailure; 7] = [
+    const ALL_FAILURES: [InjectionFailure; 8] = [
         InjectionFailure::AccessibilityNotGranted,
         InjectionFailure::HotkeyTapFailed,
         InjectionFailure::ClipboardUnavailable,
         InjectionFailure::NoAudioCaptured,
+        InjectionFailure::NoInputDevice,
         InjectionFailure::EmptyTranscript,
         InjectionFailure::AsrUnavailable,
         InjectionFailure::TranscriptionFailed,
@@ -211,6 +227,19 @@ mod tests {
             assert!(!d.detail.contains("MODELS.md"));
             assert!(!d.detail.contains("then relaunch"));
         }
+    }
+
+    #[test]
+    fn windows_microphone_failures_name_the_windows_settings_pages() {
+        // The two ways a Windows capture fails to start, as measured on the
+        // 0.2.2 build: no input device (the GitHub Actions runner), and the
+        // privacy toggle "Let desktop apps access your microphone" off.
+        let d = InjectionFailure::NoInputDevice.diagnose(Platform::Windows);
+        assert_eq!(d.headline, "No microphone found");
+        assert!(d.detail.contains("Settings → System → Sound"));
+        let d = InjectionFailure::AccessibilityNotGranted.diagnose(Platform::Windows);
+        assert_eq!(d.headline, "Microphone access blocked");
+        assert!(d.detail.contains("Let desktop apps access your microphone"));
     }
 
     #[test]

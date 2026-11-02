@@ -170,7 +170,7 @@ export function Onboarding({
         <Step
           n={1}
           title="Accessibility"
-          detail="Detects the Fn key in every app and types your words. This is the one that makes the Fn key work everywhere."
+          detail={`Detects the ${status.push_to_talk_label} key in every app and types your words. This is the one that makes the ${status.push_to_talk_label} key work everywhere.`}
           done={acc}
           active={!acc}
           locked={false}

@@ -23,8 +23,7 @@ export interface Settings {
   asr_model: string;
   sound_on_start: boolean;
   // Push-to-talk key variant string (e.g. "ControlRight", "AltLeft", "MetaLeft").
-  // Currently read by the Linux (rdev) backend; macOS/Windows use their own
-  // native key constant.
+  // Read by the Windows and Linux hooks; macOS reads a fixed Fn key.
   push_to_talk_key: string;
   // Tauri accelerator that toggles hands-free (locked) dictation — press once to
   // start talking with no key held, again to stop. Default "CmdOrCtrl+Shift+Space".
@@ -63,6 +62,14 @@ export interface Status {
   // The on-device worker AND a model are on disk. When false, "Local" pastes
   // the transcript as spoken — Settings says so instead of pretending.
   local_model_present: boolean;
+  // Rust's `std::env::consts::OS`: "macos", "windows" or "linux". "" before
+  // the first read lands (and in a browser preview).
+  platform: string;
+  // What to tell the reader to hold: "Fn" on macOS, the configured key
+  // ("Right Ctrl" by default) on Windows and Linux. Every screen that names
+  // the key prints this — the Hub used to say "Fn" on Windows, where no such
+  // key exists for the hook to see.
+  push_to_talk_label: string;
 }
 
 // What the Hub falls back to before the first read lands (and in a plain
@@ -78,7 +85,21 @@ export const UNKNOWN_STATUS: Status = {
   has_anthropic_key: false,
   has_publik_key: false,
   local_model_present: false,
+  platform: "",
+  push_to_talk_label: "your dictation key",
 };
+
+// Platform words for the Hub's copy, from `Status.platform`.
+export function platformWords(platform: string): { computer: string; keychain: string } {
+  switch (platform) {
+    case "macos":
+      return { computer: "Mac", keychain: "macOS keychain" };
+    case "windows":
+      return { computer: "PC", keychain: "Windows Credential Manager" };
+    default:
+      return { computer: "computer", keychain: "system keychain" };
+  }
+}
 
 export interface StatsSummary {
   total_words: number;

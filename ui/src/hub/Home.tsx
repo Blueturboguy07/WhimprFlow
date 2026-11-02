@@ -9,7 +9,7 @@ import { dayKey, dayLabel, fmtCompact, fmtDuration, fmtNum, fmtTimeOfDay, wordsR
 const UNLOCK_WORDS = 500;
 
 // ── Banner ───────────────────────────────────────────────────────────────────
-function Banner() {
+function Banner({ keyLabel }: { keyLabel: string }) {
   return (
     <div
       style={{
@@ -49,7 +49,7 @@ function Banner() {
           Cleanup works anywhere you write.
         </div>
         <p style={{ color: palette.slate300, fontSize: 14, lineHeight: 1.55, margin: "10px 0 0" }}>
-          Hold your key, speak, and WhimprFlow types clean text wherever your cursor is.
+          Hold {keyLabel}, speak, and WhimprFlow types clean text wherever your cursor is.
         </p>
       </div>
     </div>
@@ -102,7 +102,7 @@ function HistoryRow({ item }: { item: HistoryItem }) {
   );
 }
 
-function HistorySection({ history }: { history: HistoryItem[] }) {
+function HistorySection({ history, keyLabel }: { history: HistoryItem[]; keyLabel: string }) {
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
   const filtered = q ? history.filter((h) => h.text.toLowerCase().includes(q)) : history;
@@ -164,7 +164,7 @@ function HistorySection({ history }: { history: HistoryItem[] }) {
       <div style={{ padding: "6px 18px 14px" }}>
         {history.length === 0 ? (
           <div style={{ padding: "36px 8px", textAlign: "center", color: theme.textFaint, fontSize: 13.5 }}>
-            Your dictations will show up here. Hold your key and start speaking.
+            Your dictations will show up here. Hold {keyLabel} and start speaking.
           </div>
         ) : filtered.length === 0 ? (
           <div style={{ padding: "36px 8px", textAlign: "center", color: theme.textFaint, fontSize: 13.5 }}>
@@ -274,7 +274,9 @@ function StatsCard({ stats }: { stats: StatsSummary }) {
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────────
-export function Home() {
+// `keyLabel` is `Status.push_to_talk_label`: "Fn" on macOS, "Right Ctrl" (or
+// the configured key) on Windows and Linux.
+export function Home({ keyLabel }: { keyLabel: string }) {
   const stats = useStats();
   const [history, setHistory] = useState<HistoryItem[]>([]);
 
@@ -307,14 +309,14 @@ export function Home() {
           Welcome back
         </h1>
         <p style={{ color: theme.textMuted, fontSize: 14, margin: "8px 0 0" }}>
-          {today > 0 ? `${fmtNum(today)} words dictated today.` : "Ready when you are — hold your key and speak."}
+          {today > 0 ? `${fmtNum(today)} words dictated today.` : `Ready when you are — hold ${keyLabel} and speak.`}
         </p>
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 22, alignItems: "flex-start" }}>
         <div style={{ flex: "1 1 440px", minWidth: 0, display: "flex", flexDirection: "column", gap: 22 }}>
-          <Banner />
-          <HistorySection history={history} />
+          <Banner keyLabel={keyLabel} />
+          <HistorySection history={history} keyLabel={keyLabel} />
         </div>
         <div style={{ flex: "0 0 300px", width: 300, maxWidth: "100%" }}>
           <StatsCard stats={stats} />
