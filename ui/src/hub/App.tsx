@@ -488,7 +488,7 @@ export function App() {
         <Sidebar page={page} setPage={setPage} />
         <main style={{ flex: 1, minWidth: 0, overflowY: "auto" }}>
           <div style={{ padding: "36px 44px", margin: "0 auto", maxWidth: 1120 }}>
-            {page === "home" && <Home />}
+            {page === "home" && <Home keyLabel={status.push_to_talk_label} />}
             {page === "insights" && <Insights />}
             {page === "dictionary" && <DictionaryPane />}
             {page === "settings" && (
@@ -503,7 +503,7 @@ export function App() {
                 reloadSettings={reloadSettings}
               />
             )}
-            {page === "help" && <Help />}
+            {page === "help" && <Help status={status} />}
             {soon && <ComingSoon icon={soon.icon} title={soon.title} desc={soon.desc} />}
           </div>
         </main>

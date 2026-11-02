@@ -11,6 +11,17 @@
 #    same button a reader clicks — and waits for the model downloaded into
 #    %APPDATA%\WhimprFlow\models to load, with no relaunch.
 #
+# Between 2 and 3, with the bundled build running, it also proves the first
+# run that 0.2.2 got wrong on Windows (GitHub Actions run 41374831510):
+#
+# 5. Home, Settings and Help name the Windows push-to-talk key, Right Ctrl,
+#    and never the macOS key (Fn), which no Windows hook can see.
+# 6. Holding Right Ctrl on this runner, which has no input device, ends in a
+#    loud "No microphone found" diagnostic (log line + Hub banner) instead of
+#    the pill showing "recording", then idle, and nothing else.
+# 7. Ctrl+Shift+Space, the Hub's hands-free shortcut, starts and then stops a
+#    dictation instead of being swallowed by an empty handler.
+#
 # Screenshots and logs land in -OutDir. Exit code 1 on any failure.
 #
 # Usage: scripts/verify-windows.ps1 [-Installer <setup.exe>] [-OutDir <dir>]
@@ -23,6 +34,16 @@ $ProgressPreference = 'SilentlyContinue'
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+# Synthetic key presses. keybd_event reaches WH_KEYBOARD_LL hooks and
+# RegisterHotKey on the runner (measured: a self-hook saw vk=0xA3 for it).
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class VerifyKeys {
+  [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+}
+"@
 
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $OutDir = (Resolve-Path $OutDir).Path
@@ -81,6 +102,59 @@ function FindByName($name, $seconds) {
   return $null
 }
 
+# Every UI Automation name under the Hub window (titled "WhimprFlow"): the
+# text a reader can see on the current screen, one entry per element.
+function HubNames() {
+  $root = [System.Windows.Automation.AutomationElement]::RootElement
+  $cond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::NameProperty, 'WhimprFlow')
+  $hub = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)
+  if (-not $hub) { return @() }
+  $all = $hub.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)
+  $names = @()
+  foreach ($e in $all) {
+    try { $n = $e.Current.Name; if ($n -and $n.Trim() -ne '') { $names += $n.Trim() } } catch {}
+  }
+  return @($names | Select-Object -Unique)
+}
+
+# Click an element by name: the sidebar's "Settings" / "Help" entries.
+function ClickByName($name) {
+  $el = FindByName $name 10
+  if (-not $el) { return $false }
+  try {
+    $pat = $null
+    if ($el.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pat)) { $pat.Invoke(); return $true }
+  } catch {}
+  try {
+    $r = $el.Current.BoundingRectangle
+    $x = [int]($r.X + $r.Width / 2); $y = [int]($r.Y + $r.Height / 2)
+    [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point($x, $y)
+    [VerifyKeys]::mouse_event(0x2, 0, 0, 0, [UIntPtr]::Zero); [VerifyKeys]::mouse_event(0x4, 0, 0, 0, [UIntPtr]::Zero)
+    return $true
+  } catch { return $false }
+}
+
+function KeyDown($vk, $scan, $ext) { $f = 0; if ($ext) { $f = 1 }; [VerifyKeys]::keybd_event([byte]$vk, [byte]$scan, [uint32]$f, [UIntPtr]::Zero) }
+function KeyUp($vk, $scan, $ext)   { $f = 2; if ($ext) { $f = 3 }; [VerifyKeys]::keybd_event([byte]$vk, [byte]$scan, [uint32]$f, [UIntPtr]::Zero) }
+
+# Ctrl+Shift+Space, the default hands-free shortcut (Settings > Hands-free shortcut).
+function PressHandsFree() {
+  KeyDown 0x11 0x1D $false; KeyDown 0x10 0x2A $false; KeyDown 0x20 0x39 $false
+  Start-Sleep -Milliseconds 120
+  KeyUp 0x20 0x39 $false; KeyUp 0x10 0x2A $false; KeyUp 0x11 0x1D $false
+}
+
+# The names on one Hub screen must say Right Ctrl and never Fn.
+function CheckKeyNamed($screen, $names) {
+  $names | Out-File -Encoding UTF8 (Join-Path $OutDir "hub-$($screen.ToLower())-names.txt")
+  if (@($names -match 'Right Ctrl').Count -ge 1) { Pass "$screen names Right Ctrl" }
+  else { Fail "$screen does not name Right Ctrl ($(@($names).Count) names)" }
+  $fn = @($names -match '\bFn\b')
+  if ($fn.Count -eq 0) { Pass "$screen does not name Fn (the macOS key)" }
+  else { Fail "$screen names Fn, the macOS key: $($fn -join ' | ')" }
+}
+
 # ── Install ──────────────────────────────────────────────────────────────────
 if (-not $Installer) {
   $Installer = (Get-ChildItem -Recurse -Path target -Filter '*-setup.exe' -ErrorAction SilentlyContinue |
@@ -125,6 +199,48 @@ Start-Sleep -Seconds 3
 Shot '1-bundled-hub'
 if (FindByName 'Speech model not installed' 3) { Fail "the 'not installed' banner shows even with the bundled model" }
 else { Pass "no 'Speech model not installed' banner" }
+
+Write-Host ""
+Write-Host "First run: the key the Hub names"
+CheckKeyNamed 'Home' (HubNames)
+
+Write-Host ""
+Write-Host "First run: a microphone that cannot open (this runner has no input device)"
+$devs = Get-CimInstance Win32_SoundDevice -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+Write-Host ("  Win32_SoundDevice: " + $(if ($devs) { $devs -join '; ' } else { '(none)' }))
+KeyDown 0xA3 0x1D $true
+Start-Sleep -Milliseconds 700
+Shot '2-right-ctrl-held'
+Start-Sleep -Milliseconds 800
+KeyUp 0xA3 0x1D $true
+if (WaitForLog $run.Err 'No microphone found' 15) { Pass "holding Right Ctrl 1.5 s logs the 'No microphone found' diagnostic" }
+else { Fail "no 'No microphone found' diagnostic in the log within 15 s (0.2.2 failed silently here)" }
+Start-Sleep -Seconds 1
+Shot '3-no-microphone-banner'
+if (FindByName 'No microphone found' 10) { Pass "the Hub shows the 'No microphone found' banner" }
+else { Fail "no 'No microphone found' banner through UI Automation" }
+
+Write-Host ""
+Write-Host "First run: the hands-free shortcut (Ctrl+Shift+Space)"
+PressHandsFree
+if (WaitForLog $run.Err 'hands-free: start' 10) { Pass "Ctrl+Shift+Space starts hands-free dictation" }
+else { Fail "no 'hands-free: start' line within 10 s (0.2.2's handler was empty)" }
+Start-Sleep -Seconds 1
+PressHandsFree
+if (WaitForLog $run.Err 'hands-free: stop' 10) { Pass "Ctrl+Shift+Space again stops it" }
+else { Fail "no 'hands-free: stop' line within 10 s" }
+
+Write-Host ""
+Write-Host "First run: Settings and Help name the key"
+foreach ($page in @('Settings', 'Help')) {
+  if (ClickByName $page) {
+    Start-Sleep -Seconds 3
+    Shot "4-$page"
+    CheckKeyNamed $page (HubNames)
+  } else {
+    Fail "could not open $page through UI Automation"
+  }
+}
 StopApp $run
 
 Write-Host ""
@@ -166,6 +282,9 @@ if ($button) {
 StopApp $run
 Move-Item -Force $Aside $Bundled
 
+Write-Host ""
+Write-Host "--- bundled.err.log ---"
+Get-Content (Join-Path $OutDir 'bundled.err.log') -ErrorAction SilentlyContinue | Select-Object -First 60
 Write-Host ""
 Write-Host "--- download.err.log ---"
 Get-Content (Join-Path $OutDir 'download.err.log') -ErrorAction SilentlyContinue | Select-Object -First 40

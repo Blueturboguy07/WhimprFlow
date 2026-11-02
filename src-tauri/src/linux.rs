@@ -342,20 +342,9 @@ fn parse_ptt_key(s: &str) -> Option<rdev::Key> {
 }
 
 /// Human-readable label for a key variant string (shown in the startup message).
+/// The same helper the Hub's copy comes from (`whimpr_core::keys`).
 fn ptt_key_label(s: &str) -> &str {
-    match s {
-        "ControlRight" => "Right Ctrl",
-        "ControlLeft" => "Left Ctrl",
-        "AltRight" => "Right Alt",
-        "AltLeft" => "Left Alt",
-        "ShiftRight" => "Right Shift",
-        "ShiftLeft" => "Left Shift",
-        "MetaRight" => "Right Super/Meta",
-        "MetaLeft" => "Left Super/Meta",
-        "CapsLock" => "Caps Lock",
-        s if s.starts_with('F') => s, // F1-F12
-        _ => s,
-    }
+    whimpr_core::keys::key_label(s)
 }
 
 fn spawn_keyboard_listener() {

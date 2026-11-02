@@ -225,6 +225,22 @@ struct StatusReport {
     /// The on-device cleanup worker AND a model are on disk — when false,
     /// "Local" pastes the transcript as spoken and Settings says so.
     local_model_present: bool,
+    /// `std::env::consts::OS` ("macos", "windows", "linux"): the Hub words its
+    /// instructions per platform from this.
+    platform: &'static str,
+    /// What to tell the reader to hold: "Fn" on macOS, the configured key
+    /// ("Right Ctrl" by default) on Windows and Linux. Bug fix: every Hub
+    /// screen used to say "Fn" on Windows, where Fn is not a key the hook can
+    /// see (0.2.2, GitHub Actions run 41374831510).
+    push_to_talk_label: String,
+}
+
+/// The push-to-talk key's name on this build's platform, from Settings.
+fn push_to_talk_label() -> String {
+    whimpr_core::keys::push_to_talk_label(
+        std::env::consts::OS,
+        &hotkey::current_settings().push_to_talk_key,
+    )
 }
 
 #[tauri::command]
@@ -241,6 +257,8 @@ fn get_status() -> StatusReport {
         has_anthropic_key: has_key("anthropic_api_key"),
         has_publik_key: publik::read_key().is_some(),
         local_model_present: local_llm::worker_bin_path().is_some() && local_llm::model_path().exists(),
+        platform: std::env::consts::OS,
+        push_to_talk_label: push_to_talk_label(),
     }
 }
 
@@ -512,7 +530,21 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::byo_account;
+    use super::{byo_account, push_to_talk_label};
+
+    #[test]
+    fn status_names_a_key_this_platform_can_see() {
+        // "Fn" is a key only the macOS hook reads; every other platform names
+        // the configured key (Right Ctrl by default). The Hub prints this
+        // label verbatim on Home, Settings and Help.
+        let label = push_to_talk_label();
+        assert!(!label.trim().is_empty());
+        if cfg!(target_os = "macos") {
+            assert_eq!(label, "Fn");
+        } else {
+            assert_ne!(label, "Fn");
+        }
+    }
 
     #[test]
     fn set_api_key_still_rejects_unknown_providers() {

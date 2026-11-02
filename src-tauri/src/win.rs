@@ -3,16 +3,15 @@
 //! plus the same dictation pipeline (audio → Whisper ASR → cleanup LLM → paste) and
 //! the Hub-facing settings/stats/dictionary functions the Tauri commands call.
 //!
-//! ⚠️ UNVERIFIED: this module was written on macOS and has **never been compiled or
-//! run on Windows**. The shared crates (audio, ASR, cleanup, core) are
-//! cross-platform, but this Win32 glue will almost certainly need fixes before it
-//! builds and runs. It is `cfg(target_os = "windows")` so it does not affect — and
-//! is not checked by — the macOS build. Treat it as a starting point, not a
-//! shipping port. Default push-to-talk key: Right Ctrl.
+//! Built and exercised on a real Windows runner by `.github/workflows/windows.yml`
+//! (`scripts/verify-windows.ps1` installs the build, holds the push-to-talk key,
+//! presses the hands-free shortcut and reads the Hub's text). It is
+//! `cfg(target_os = "windows")`, so the macOS build neither compiles nor checks
+//! it. Default push-to-talk key: Right Ctrl (`Settings::push_to_talk_key`).
 
 #![cfg(target_os = "windows")]
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -34,13 +33,23 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use whimpr_core::{AsrEngine, CleanupContext, CleanupMode, CleanupProvider, StatsSummary};
 
-/// Push-to-talk key. Right Ctrl by default (Ctrl+Win chords land in a later pass).
-const PTT_VK: u16 = VK_RCONTROL.0;
+/// Push-to-talk virtual-key code: Right Ctrl unless Settings says otherwise
+/// (`Settings::push_to_talk_key`, the Hub's "Push-to-Talk Key" card). Set at
+/// install and on every settings change; the hook reads it on every key event.
+/// Bug fix: this was a hard-coded `VK_RCONTROL`, so the card changed its label
+/// and nothing else.
+static PTT_VK: AtomicU16 = AtomicU16::new(VK_RCONTROL.0);
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
 static CLOCK: OnceLock<Instant> = OnceLock::new();
 static RECORDING: AtomicBool = AtomicBool::new(false);
+/// `now_ms()` when the current hold began, so a release with no audio can
+/// tell an accidental tap from a real dictation attempt.
+static DOWN_AT_MS: AtomicU64 = AtomicU64::new(0);
 static CAPTURE: OnceLock<Mutex<Option<whimpr_audio::CaptureHandle>>> = OnceLock::new();
+/// Why the capture for the current hold could not start (`whimpr_audio::start`'s
+/// error text), cleared at every key-down. Read at key-up to pick the diagnostic.
+static START_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static LOCAL: OnceLock<Mutex<Option<crate::local_llm::LocalWorker>>> = OnceLock::new();
 /// The cloud speech-to-text engine (`Settings::asr_mode == Cloud`), rebuilt
 /// whenever the OpenAI key or the ASR base URL / model changes. `None` when
@@ -76,6 +85,23 @@ fn unix_now() -> u64 {
 
 fn now_ms() -> u64 {
     CLOCK.get().map(|c| c.elapsed().as_millis() as u64).unwrap_or(0)
+}
+
+fn start_error_slot() -> &'static Mutex<Option<String>> {
+    START_ERROR.get_or_init(|| Mutex::new(None))
+}
+
+/// Point the hook at the key Settings names. Unknown strings keep Right Ctrl.
+fn apply_ptt_key(settings: &whimpr_core::Settings) {
+    let vk = whimpr_core::keys::windows_virtual_key(&settings.push_to_talk_key)
+        .unwrap_or(VK_RCONTROL.0);
+    PTT_VK.store(vk, Ordering::SeqCst);
+}
+
+/// The key's name for log lines ("Right Ctrl"), from the same helper the Hub's
+/// copy comes from, so both always agree.
+fn ptt_label() -> String {
+    whimpr_core::keys::push_to_talk_label("windows", &current_settings_inner().push_to_talk_key)
 }
 
 fn emit_bar(state: &'static str) {
@@ -244,14 +270,37 @@ fn on_ptt_down() {
     if RECORDING.swap(true, Ordering::SeqCst) {
         return; // already recording
     }
-    let _ = now_ms();
+    DOWN_AT_MS.store(now_ms(), Ordering::SeqCst);
+    *start_error_slot().lock().unwrap() = None;
     emit_bar("recording");
     std::thread::spawn(|| match whimpr_audio::start(|_: &[f32]| {}) {
         Ok(handle) => {
             *CAPTURE.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(handle);
         }
-        Err(e) => eprintln!("[whimpr:win] mic capture failed: {e}"),
+        Err(e) => {
+            // Remembered for the key-up, which decides whether this hold was a
+            // real attempt worth a loud diagnostic (see `on_ptt_up`).
+            eprintln!("[whimpr:win] mic capture failed: {e}");
+            *start_error_slot().lock().unwrap() = Some(e.to_string());
+        }
     });
+}
+
+/// The capture handle for the hold that just ended. `whimpr_audio::start` runs
+/// on its own thread and returns only once the stream plays, so a release that
+/// follows the press closely can beat it; wait a little (or until the start is
+/// known to have failed) rather than declare "no audio" over a race.
+fn take_capture_handle() -> Option<whimpr_audio::CaptureHandle> {
+    for _ in 0..10 {
+        if let Some(handle) = CAPTURE.get().and_then(|slot| slot.lock().unwrap().take()) {
+            return Some(handle);
+        }
+        if start_error_slot().lock().unwrap().is_some() {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    None
 }
 
 fn on_ptt_up() {
@@ -260,7 +309,7 @@ fn on_ptt_up() {
     }
     emit_bar("idle");
     let app = foreground_app();
-    let handle = CAPTURE.get().and_then(|slot| slot.lock().unwrap().take());
+    let held_ms = now_ms().saturating_sub(DOWN_AT_MS.load(Ordering::SeqCst));
     std::thread::spawn(move || {
         // Below ~600ms is very likely an accidental brief tap, so don't alarm
         // the user over it — only surface a loud diagnostic for holds long
@@ -268,8 +317,23 @@ fn on_ptt_up() {
         // whole function used to fail silently on every one of these paths
         // (no eprintln, no UI signal, nothing) — indistinguishable from
         // "held the key, spoke, nothing happened".
-        let Some(res) = handle.and_then(|h| h.stop()) else {
-            eprintln!("[whimpr:win] no audio captured");
+        let Some(res) = take_capture_handle().and_then(|h| h.stop()) else {
+            // Bug fix (0.2.2, measured on a real Windows runner, GitHub Actions
+            // run 41374831510): a microphone Windows could not open ended here
+            // with an `eprintln!` that release builds hide. The pill showed
+            // "recording", then idle, and no banner — exactly like a dictation
+            // that typed nothing. Now the hold's own failure is reported
+            // ("No microphone found" / "Microphone access blocked"), or "No
+            // audio came in" when the capture never landed at all.
+            let start_error = start_error_slot().lock().unwrap().clone();
+            eprintln!(
+                "[whimpr:win] no audio captured ({}, held {held_ms} ms)",
+                start_error.as_deref().unwrap_or("capture never started")
+            );
+            let failure = whimpr_core::keys::missing_capture_failure(start_error.as_deref(), held_ms);
+            if let (Some(failure), Some(app)) = (failure, APP.get()) {
+                crate::diag::report(app, failure);
+            }
             return;
         };
         let was_real_attempt = res.duration_secs() >= 0.6;
@@ -340,7 +404,7 @@ unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -
     if code >= 0 {
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
         let vk = kb.vkCode as u16;
-        if vk == PTT_VK {
+        if vk == PTT_VK.load(Ordering::Relaxed) {
             match wparam.0 as u32 {
                 WM_KEYDOWN | WM_SYSKEYDOWN => on_ptt_down(),
                 WM_KEYUP | WM_SYSKEYUP => on_ptt_up(),
@@ -380,7 +444,7 @@ fn spawn_hook_thread() {
             }
         };
         if reported {
-            eprintln!("[whimpr:win] keyboard hook recovered — Right Ctrl is live now.");
+            eprintln!("[whimpr:win] keyboard hook recovered — {} is live now.", ptt_label());
             crate::diag::clear_last_error();
         }
         let _ = hook; // keeps the hook alive for the lifetime of this thread
@@ -415,8 +479,9 @@ pub fn install(app: AppHandle) {
         }
     });
 
+    apply_ptt_key(&current_settings_inner());
     spawn_hook_thread();
-    eprintln!("[whimpr:win] keyboard hook installed (push-to-talk: Right Ctrl)");
+    eprintln!("[whimpr:win] keyboard hook installed (push-to-talk: {})", ptt_label());
 }
 
 pub fn current_settings() -> whimpr_core::Settings {
@@ -428,16 +493,45 @@ pub fn update_settings(new: whimpr_core::Settings) {
         *m.lock().unwrap() = new.clone();
     }
     let _ = new.save(&settings_path());
+    apply_ptt_key(&new);
     rebuild_providers();
 }
 
-/// Stop / cancel the overlay pill's current recording. The Windows dictation
-/// driver does not route through the shared `handle_input` state machine the
-/// macOS layer uses, so these are inert here for now — the pill's Stop/✕ buttons
-/// are wired on macOS (Publik Test 2); a Windows equivalent is separate work.
-pub fn stop_dictation() {}
-pub fn cancel_dictation() {}
-pub fn trigger_hands_free() {}
+/// Stop and finalize the current recording — the overlay pill's red Stop
+/// button. Same path as releasing the key.
+pub fn stop_dictation() {
+    on_ptt_up();
+}
+
+/// Discard the current recording — the overlay pill's ✕ button.
+pub fn cancel_dictation() {
+    if !RECORDING.swap(false, Ordering::SeqCst) {
+        return; // wasn't recording
+    }
+    emit_bar("idle");
+    std::thread::spawn(|| {
+        if let Some(handle) = take_capture_handle() {
+            let _ = handle.stop();
+        }
+        eprintln!("[whimpr:win] dictation cancelled");
+    });
+}
+
+/// Toggle hands-free dictation — the global shortcut lib.rs registers (default
+/// Ctrl+Shift+Space) fires this: once to start recording with no key held,
+/// again to stop and transcribe. Bug fix: this was an empty stub while the
+/// chord was still registered system-wide, so the Hub advertised a shortcut
+/// that swallowed Ctrl+Shift+Space from every app and did nothing (0.2.2,
+/// GitHub Actions run 41374831510: no log line, no state change).
+pub fn trigger_hands_free() {
+    if RECORDING.load(Ordering::SeqCst) {
+        eprintln!("[whimpr:win] hands-free: stop");
+        on_ptt_up();
+    } else {
+        eprintln!("[whimpr:win] hands-free: start");
+        on_ptt_down();
+    }
+}
 
 pub fn rebuild_providers() {
     let settings = current_settings_inner();

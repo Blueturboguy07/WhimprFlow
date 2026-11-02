@@ -13,6 +13,7 @@ pub mod asr;
 pub mod cleanup;
 pub mod diagnostics;
 pub mod dictionary;
+pub mod keys;
 pub mod settings;
 pub mod state;
 pub mod stats;

@@ -101,8 +101,9 @@ any OpenAI-compatible API — for example `https://openrouter.ai/api/v1` for
 "OpenAI API key" field.
 
 Push-to-talk defaults to **Right Ctrl** (hold to record, release to paste) — the
-Windows analogue of Wispr Flow's own `Ctrl+Win` default; a configurable hotkey is
-planned but not wired up yet.
+Windows analogue of Wispr Flow's own `Ctrl+Win` default. Pick another key under
+Settings → Push-to-Talk Key; the Hub names the key it expects on Home, Settings
+and Help. Ctrl+Shift+Space starts a hands-free dictation and stops it.
 
 The Windows GPU backend for Whisper/llama.cpp is CPU-only for now (the macOS build
 uses Metal); CUDA/Vulkan feature flags can be added in `crates/whimpr-asr/Cargo.toml`
@@ -129,6 +130,12 @@ why it looked like nothing was happening at all). If you still hit this:
 - **Windows — Right Ctrl does nothing.** Another app may be holding a
   conflicting global keyboard hook (some anti-cheat/security tools do this);
   close it and relaunch WhimprFlow.
+- **Windows — the pill says "Microphone access blocked" or "No microphone
+  found".** Windows refused to open the microphone, or has no input device.
+  Open Settings → Privacy & security → Microphone and turn on "Let desktop
+  apps access your microphone", or plug in / enable a microphone under
+  Settings → System → Sound → Input, then hold Right Ctrl again. (0.2.2 showed
+  nothing at all here: the pill said "recording", then went idle.)
 - **"Speech model not installed".** Click **Download speech model** in the
   popup or on the Hub banner (148 MB, no relaunch). To place a model by hand,
   see [docs/MODELS.md](docs/MODELS.md).

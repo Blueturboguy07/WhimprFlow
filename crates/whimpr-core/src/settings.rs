@@ -122,9 +122,8 @@ pub struct Settings {
     /// Play the record-start ping.
     pub sound_on_start: bool,
     /// The push-to-talk key, stored as an rdev::Key variant string (e.g.
-    /// "ControlRight"). Defaults to Right Ctrl. Only meaningful on platforms
-    /// that read it (currently Linux's rdev-based hook); macOS/Windows use
-    /// their own native key constant today.
+    /// "ControlRight"). Defaults to Right Ctrl. Read by the Windows and Linux
+    /// hooks (see `keys::windows_virtual_key`); macOS reads a fixed Fn key.
     #[serde(default = "default_push_to_talk_key")]
     pub push_to_talk_key: String,
     /// The global hotkey that toggles HANDS-FREE (locked) dictation — press once

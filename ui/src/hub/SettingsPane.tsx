@@ -127,12 +127,25 @@ const ACCELERATOR_SYMBOLS: Record<string, string> = {
   Shift: "⇧",
 };
 
-function prettyAccelerator(accelerator: string): string {
+// Windows and Linux have no ⌘: "CmdOrCtrl" is the Ctrl key there, spelled
+// out the way those platforms write chords ("Ctrl+Shift+Space"). The Windows
+// Hub used to show ⌘ ⇧ Space for a shortcut the keyboard cannot produce.
+const ACCELERATOR_WORDS: Record<string, string> = {
+  CmdOrCtrl: "Ctrl",
+  Cmd: "Win",
+  Command: "Win",
+  Super: "Win",
+  Control: "Ctrl",
+  Option: "Alt",
+};
+
+export function prettyAccelerator(accelerator: string, platform: string): string {
   if (!accelerator.trim()) return "Off";
-  return accelerator
-    .split("+")
-    .map((part) => ACCELERATOR_SYMBOLS[part] ?? part)
-    .join(" ");
+  const parts = accelerator.split("+");
+  if (platform === "macos" || platform === "") {
+    return parts.map((part) => ACCELERATOR_SYMBOLS[part] ?? part).join(" ");
+  }
+  return parts.map((part) => ACCELERATOR_WORDS[part] ?? part).join("+");
 }
 
 // "Speak without having to hold down fn … a combination of buttons … with
@@ -141,9 +154,13 @@ function prettyAccelerator(accelerator: string): string {
 function HandsFreeHotkeyRow({
   value,
   onChange,
+  platform,
+  keyLabel,
 }: {
   value: string;
   onChange: (accelerator: string) => void;
+  platform: string;
+  keyLabel: string;
 }) {
   const [recording, setRecording] = useState(false);
 
@@ -175,13 +192,14 @@ function HandsFreeHotkeyRow({
             Hands-free shortcut
           </div>
           <div style={{ color: theme.textMuted, fontSize: 13, marginTop: 4 }}>
-            Press it once to start talking with no key held, again to stop. Holding Fn
-            (push-to-talk) and double-tapping Fn still work too.
+            Press it once to start talking with no key held, again to stop. Holding {keyLabel}{" "}
+            (push-to-talk){platform === "macos" ? ` and double-tapping ${keyLabel}` : ""} still{" "}
+            {platform === "macos" ? "work" : "works"} too.
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flex: "0 0 auto" }}>
           <Button onClick={() => setRecording((on) => !on)}>
-            {recording ? "Press keys…" : prettyAccelerator(value)}
+            {recording ? "Press keys…" : prettyAccelerator(value, platform)}
           </Button>
           {value.trim() !== "" && !recording && (
             <Button onClick={() => onChange("")}>Off</Button>
@@ -704,6 +722,8 @@ export function SettingsPane({
         </div>
       </Card>
 
+      {/* macOS reads a fixed Fn key, so this card would be a no-op there. */}
+      {status.platform !== "macos" && (
       <Card style={{ marginBottom: 16 }}>
         <SectionTitle sub="Hold this key to start dictating, release to finish.">Push-to-Talk Key</SectionTitle>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -731,9 +751,12 @@ export function SettingsPane({
           })}
         </div>
         <div style={{ color: theme.textMuted, fontSize: 12.5, marginTop: 10 }}>
-          Changes take effect after restarting the app.
+          {status.platform === "windows"
+            ? "Takes effect right away."
+            : "Changes take effect after restarting the app."}
         </div>
       </Card>
+      )}
 
       <Card style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
@@ -754,8 +777,25 @@ export function SettingsPane({
       <HandsFreeHotkeyRow
         value={settings.hands_free_hotkey ?? ""}
         onChange={(accelerator) => onChange({ ...settings, hands_free_hotkey: accelerator })}
+        platform={status.platform}
+        keyLabel={status.push_to_talk_label}
       />
 
+      {status.platform === "windows" ? (
+        // Windows has no Accessibility / Input Monitoring grants, and the app
+        // cannot read the microphone privacy switch, so three green rows here
+        // would be a lie. Say what to do if the pill reports a blocked mic.
+        <Card>
+          <SectionTitle sub="Windows asks for no permission to watch the key or type your words.">
+            Permissions
+          </SectionTitle>
+          <div style={{ fontSize: 13, color: theme.textBody, lineHeight: 1.55 }}>
+            If dictation stops with <b>Microphone access blocked</b>, open Windows Settings → Privacy &amp;
+            security → Microphone and turn on <b>Let desktop apps access your microphone</b>. If it says{" "}
+            <b>No microphone found</b>, plug in or enable a microphone under Settings → System → Sound → Input.
+          </div>
+        </Card>
+      ) : (
       <Card>
         <SectionTitle sub="Grant these to WhimprFlow — dots update automatically within a few seconds.">
           Permissions
@@ -766,8 +806,8 @@ export function SettingsPane({
             label="Accessibility"
             detail={
               status.accessibility
-                ? "granted — Fn works everywhere + types your words"
-                : "the key one: makes Fn work in EVERY app AND types your words"
+                ? `granted — ${status.push_to_talk_label} works everywhere + types your words`
+                : `the key one: makes ${status.push_to_talk_label} work in EVERY app AND types your words`
             }
             onClick={() => {
               requestAccessibility();
@@ -801,6 +841,7 @@ export function SettingsPane({
           />
         </div>
       </Card>
+      )}
     </div>
   );
 }
