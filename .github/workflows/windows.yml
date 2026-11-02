@@ -1,27 +1,15 @@
-# Windows: build the NSIS installer with the speech model bundled, run the
-# Rust tests (including the real 148 MB model download), then install the
-# build on the runner and prove it transcribes-ready (scripts/verify-windows.ps1):
-# the bundled model loads, and with it removed the Hub's "Download speech
-# model" button fetches, verifies and loads one with no relaunch.
-#
-# On a published release, the installer is attached to that release.
+# TRIAGE PROBE BRANCH (lane whimprflow-windows-silent): same build as v0.2.2,
+# but the unit tests and the real model download are skipped (already proven
+# by the v0.2.2 release run 35983789434), and scripts/probe-windows-dictate.ps1
+# runs instead of verify-windows.ps1. See that script's header.
 
 name: windows
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  release:
-    types: [published]
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: "Attach the installer to this existing release tag (optional)"
-        required: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   windows:
@@ -48,8 +36,6 @@ jobs:
         with:
           python-version: "3.12"
 
-      # whisper-rs-sys runs bindgen, which needs libclang 18; the runner's LLVM
-      # is newer. Same side-load the publik install guide uses.
       - name: libclang 18 for bindgen
         shell: pwsh
         run: |
@@ -59,12 +45,6 @@ jobs:
 
       - name: Install UI dependencies
         run: pnpm --dir ui install --frozen-lockfile
-
-      - name: Rust tests
-        run: cargo test --release -p whimpr-core -p whimpr-tauri
-
-      - name: Real speech model download (network)
-        run: cargo test --release -p whimpr-tauri real_download -- --ignored --nocapture
 
       - name: Fetch the speech model to bundle
         shell: bash
@@ -79,27 +59,13 @@ jobs:
           ..\ui\node_modules\.bin\tauri.CMD build --config tauri.bundled-model.conf.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Install and verify
+      - name: Install and probe the first run
         shell: powershell
-        run: .\scripts\verify-windows.ps1 -OutDir verify-windows-out
+        run: .\scripts\probe-windows-dictate.ps1 -OutDir probe-windows-out
 
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: verify-windows
-          path: verify-windows-out
-
-      - name: Upload installer
-        uses: actions/upload-artifact@v4
-        with:
-          name: whimprflow-windows-installer
-          path: target/release/bundle/nsis/*-setup.exe
-
-      - name: Attach the installer to the release
-        if: github.event_name == 'release' || inputs.release_tag != ''
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
-        run: gh release upload "$TAG" target/release/bundle/nsis/*-setup.exe --clobber
+          name: probe-windows
+          path: probe-windows-out
