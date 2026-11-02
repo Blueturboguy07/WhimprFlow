@@ -9,6 +9,7 @@ import { DictionaryPane } from "./DictionaryPane";
 import { SettingsPane } from "./SettingsPane";
 import { Help } from "./Help";
 import { ComingSoon } from "./ComingSoon";
+import { PublikFrontCard } from "./PublikFrontCard";
 import { SpeechModelPrompt, MODEL_SIZE_LABEL, mb } from "./SpeechModelPrompt";
 import type { IconName } from "./icons";
 import {
@@ -215,6 +216,10 @@ export function App() {
   // "Not now" holds until the next failed dictation or failed download.
   const modelPromptDismissedRef = useRef(false);
 
+  // "Use my own key instead" on the publik card: Settings opens with the own-key fields open (a counter, so the
+  // same request twice still opens them).
+  const [ownKeysRequest, setOwnKeysRequest] = useState(0);
+
   const markEntered = () => {
     try { localStorage.setItem("whimpr_onboarding_done", "1"); } catch { /* ignore */ }
     setEntered(true);
@@ -395,9 +400,35 @@ export function App() {
     saveTimer.current = setTimeout(() => void setSettings(s), 400);
   };
 
+  const publikCard = (onOwnKey: () => void, compact = false) => (
+    <PublikFrontCard
+      compact={compact}
+      settings={settings}
+      publik={publik}
+      status={status}
+      setPublik={setPublik}
+      reloadSettings={reloadSettings}
+      onOwnKey={onOwnKey}
+    />
+  );
+  const openOwnKeys = () => {
+    setOwnKeysRequest((n) => n + 1);
+    setPage("settings");
+  };
+
   // Gate the app behind the setup wizard until the required permissions are granted.
   if (!(status.accessibility && status.microphone) && !entered) {
-    return <Onboarding status={status} refresh={refresh} onEnter={markEntered} />;
+    return (
+      <Onboarding
+        status={status}
+        refresh={refresh}
+        onEnter={markEntered}
+        publikSlot={publikCard(() => {
+          markEntered();
+          openOwnKeys();
+        }, true)}
+      />
+    );
   }
 
   const soon = SOON[page];
@@ -488,7 +519,12 @@ export function App() {
         <Sidebar page={page} setPage={setPage} />
         <main style={{ flex: 1, minWidth: 0, overflowY: "auto" }}>
           <div style={{ padding: "36px 44px", margin: "0 auto", maxWidth: 1120 }}>
-            {page === "home" && <Home keyLabel={status.push_to_talk_label} />}
+            {page === "home" && (
+              <>
+                <div style={{ marginBottom: 20 }}>{publikCard(openOwnKeys)}</div>
+                <Home keyLabel={status.push_to_talk_label} />
+              </>
+            )}
             {page === "insights" && <Insights />}
             {page === "dictionary" && <DictionaryPane />}
             {page === "settings" && (
@@ -501,6 +537,7 @@ export function App() {
                 refreshPublik={refreshPublik}
                 setPublik={setPublik}
                 reloadSettings={reloadSettings}
+                openOwnKeys={ownKeysRequest}
               />
             )}
             {page === "help" && <Help status={status} />}

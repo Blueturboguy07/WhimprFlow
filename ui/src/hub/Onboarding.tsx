@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { font, palette } from "../tokens/values";
 import { theme } from "./theme";
 import {
@@ -102,10 +102,13 @@ export function Onboarding({
   status,
   refresh,
   onEnter,
+  publikSlot,
 }: {
   status: Status;
   refresh: () => void;
   onEnter: () => void;
+  // publik first: "WhimprFlow runs on publik API" with its one "Connect publik" button, under the permissions.
+  publikSlot?: ReactNode;
 }) {
   // A backstop poll. The state actually flips on the heartbeat Rust pushes at
   // us (`permissions::watch` → `whimpr://permissions`), because this webview
@@ -132,35 +135,38 @@ export function Onboarding({
     <div
       style={{
         height: "100vh",
+        overflowY: "auto",
+        boxSizing: "border-box",
         display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
         background: theme.pageBg,
         color: theme.textBody,
         fontFamily: font.ui,
         padding: 24,
       }}
     >
-      <div style={{ width: 560, maxWidth: "100%" }}>
+      <div style={{ width: 560, maxWidth: "100%", margin: "auto" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
           <div style={{ fontFamily: font.serif, fontSize: 30, fontWeight: 600, color: theme.textStrong }}>
             Set up WhimprFlow
           </div>
-          <span
-            style={{
-              fontSize: 10,
-              fontWeight: 700,
-              letterSpacing: 0.4,
-              textTransform: "uppercase",
-              color: theme.accentDeep,
-              background: theme.accentSoft,
-              border: `1px solid ${theme.accentSoftBorder}`,
-              borderRadius: 999,
-              padding: "2px 7px",
-            }}
-          >
-            Local
-          </span>
+          {/* "Local" next to "runs on publik API" says two things at once: no badge when the publik card is here. */}
+          {!publikSlot && (
+            <span
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: 0.4,
+                textTransform: "uppercase",
+                color: theme.accentDeep,
+                background: theme.accentSoft,
+                border: `1px solid ${theme.accentSoftBorder}`,
+                borderRadius: 999,
+                padding: "2px 7px",
+              }}
+            >
+              Local
+            </span>
+          )}
         </div>
         <p style={{ color: theme.textMuted, lineHeight: 1.5, margin: "0 0 24px" }}>
           Grant these to <b>WhimprFlow</b>, in order. Each turns green here the moment macOS applies
@@ -201,6 +207,8 @@ export function Onboarding({
           required={false}
           onGrant={() => requestInputMonitoring()}
         />
+
+        {publikSlot && <div style={{ margin: "4px 0 8px" }}>{publikSlot}</div>}
 
         <button
           onClick={onEnter}

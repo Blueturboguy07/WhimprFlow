@@ -4,6 +4,7 @@ import { theme } from "./theme";
 import { Button, Card, Dot, PageTitle, Segmented } from "./ui";
 import { CloudDisclosure } from "./CloudDisclosure";
 import { PublikFirstRun } from "./PublikFirstRun";
+import { ownKeysOpen, publikFront } from "./publikFront";
 import {
   publikAcceptDisclosure,
   publikForgetKey,
@@ -33,17 +34,17 @@ const ASR_MODES: { value: AsrMode; label: string; hint: string }[] = [
   },
 ];
 
-// Tier 2 (offered, not preselected): Local is the default; "publik API" is the
-// pre-filled cloud option one tap away, with the cost + data-path notice shown
-// the first time it is picked — never at launch.
+// publik first: "publik API" leads the picker and the card above it says that
+// WhimprFlow runs on publik API with no key; Local stays the saved default until
+// the person connects (the cost + data-path notice is the consent).
 const MODES: { value: CleanupMode; label: string; hint: string }[] = [
-  { value: "raw", label: "Raw", hint: "Paste exactly what you said" },
-  { value: "local", label: "Local", hint: "On-device model (offline)" },
   {
     value: "publik",
     label: "publik API",
     hint: "Cloud cleanup on your publik balance — priced per use at 50% of the model's published list price; most people spend under $2 a month. Your transcript (never audio) goes through publik's servers to a shared model account; publik never trains on it and does not store it.",
   },
+  { value: "local", label: "Local", hint: "On-device model (offline)" },
+  { value: "raw", label: "Raw", hint: "Paste exactly what you said" },
   { value: "open_ai", label: "OpenAI", hint: "Cloud cleanup via OpenAI (or an OpenAI-compatible API like OpenRouter — set the base URL below)" },
   { value: "anthropic", label: "Anthropic", hint: "Cloud cleanup via Claude" },
 ];
@@ -431,6 +432,7 @@ export function SettingsPane({
   refreshPublik,
   setPublik,
   reloadSettings,
+  openOwnKeys = 0,
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
@@ -443,8 +445,20 @@ export function SettingsPane({
   // Re-reads Settings from Rust after it changed them (provisioning writes
   // the install id / base URL / model / claim link and selects the mode).
   reloadSettings: () => Promise<void>;
+  // Bumped by "Use my own key instead" on the Home / setup card: open the own-key fields and scroll to them.
+  openOwnKeys?: number;
 }) {
   const [showDisclosure, setShowDisclosure] = useState(false);
+  // The own-key fields start closed unless the person already uses their own key (publik first).
+  const [keysChoice, setKeysChoice] = useState<boolean | null>(null);
+  const keysOpen = keysChoice ?? ownKeysOpen(settings, status);
+  const [frontLater, setFrontLater] = useState(false);
+  const front = publikFront(settings, publik, status);
+  useEffect(() => {
+    if (!openOwnKeys) return;
+    setKeysChoice(true);
+    setTimeout(() => document.getElementById("byo-keys")?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+  }, [openOwnKeys]);
   const [busy, setBusy] = useState(false);
   const [publikError, setPublikError] = useState<string | null>(null);
 
@@ -459,6 +473,7 @@ export function SettingsPane({
     // Switch mode only. The publik key stays for when they come back; nothing
     // is deleted and the user's own key fields are untouched.
     setShowDisclosure(false);
+    setKeysChoice(true);
     onChange({ ...settings, cleanup_mode: "open_ai" });
     setTimeout(() => document.getElementById("byo-keys")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
   };
@@ -486,72 +501,21 @@ export function SettingsPane({
       <PageTitle>Settings</PageTitle>
 
       <Card style={{ marginBottom: 16 }}>
-        <SectionTitle sub="Which engine turns your speech into text.">Speech-to-Text</SectionTitle>
-        <Segmented
-          options={ASR_MODES.map((m) => ({ value: m.value, label: m.label }))}
-          value={settings.asr_mode}
-          onChange={(v) => onChange({ ...settings, asr_mode: v })}
-        />
-        <div style={{ color: theme.textMuted, fontSize: 12.5, marginTop: 10 }}>
-          {ASR_MODES.find((m) => m.value === settings.asr_mode)?.hint}
-        </div>
-        {settings.asr_mode === "cloud" && (
-          <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12.5, color: theme.textMuted, marginBottom: 6 }}>
-                Base URL (blank = OpenAI; e.g. https://api.groq.com/openai/v1 for Groq)
-              </div>
-              <input
-                type="text"
-                value={settings.asr_base_url}
-                placeholder="https://api.groq.com/openai/v1"
-                onChange={(e) => onChange({ ...settings, asr_base_url: e.target.value })}
-                style={{
-                  width: "100%",
-                  background: theme.cardBgSubtle,
-                  border: `1px solid ${theme.border}`,
-                  borderRadius: 10,
-                  padding: "9px 12px",
-                  color: theme.textBody,
-                  fontFamily: font.mono,
-                  fontSize: 13,
-                  outline: "none",
-                  boxSizing: "border-box",
-                }}
-              />
-            </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12.5, color: theme.textMuted, marginBottom: 6 }}>
-                Model (e.g. whisper-large-v3-turbo for Groq, whisper-1 for OpenAI)
-              </div>
-              <input
-                type="text"
-                value={settings.asr_model}
-                placeholder="whisper-large-v3-turbo"
-                onChange={(e) => onChange({ ...settings, asr_model: e.target.value })}
-                style={{
-                  width: "100%",
-                  background: theme.cardBgSubtle,
-                  border: `1px solid ${theme.border}`,
-                  borderRadius: 10,
-                  padding: "9px 12px",
-                  color: theme.textBody,
-                  fontFamily: font.mono,
-                  fontSize: 13,
-                  outline: "none",
-                  boxSizing: "border-box",
-                }}
-              />
-            </div>
+        <SectionTitle sub="Where your dictation is cleaned up before it's typed.">Cleanup Engine</SectionTitle>
+        {(front === "connect" || front === "reconnect") && !showDisclosure && !frontLater && (
+          <div style={{ marginBottom: 14 }}>
+            <CloudDisclosure
+              variant="front"
+              reconnect={front === "reconnect"}
+              onAccept={() => void accept()}
+              onOwnKey={useOwnKey}
+              onClose={() => setFrontLater(true)}
+              busy={busy}
+              error={publikError}
+              canProvision={publik.can_provision || publik.has_key}
+            />
           </div>
         )}
-        <div style={{ color: theme.textMuted, fontSize: 12.5, marginTop: 10 }}>
-          Cloud speech-to-text reuses the OpenAI API key below.
-        </div>
-      </Card>
-
-      <Card style={{ marginBottom: 16 }}>
-        <SectionTitle sub="Where your dictation is cleaned up before it's typed.">Cleanup Engine</SectionTitle>
         <Segmented
           options={MODES.map((m) => ({ value: m.value, label: m.label }))}
           value={settings.cleanup_mode}
@@ -572,7 +536,7 @@ export function SettingsPane({
           {MODES.find((m) => m.value === settings.cleanup_mode)?.hint}
         </div>
 
-        {settings.cleanup_mode === "local" && !status.local_model_present && !showDisclosure && (
+        {settings.cleanup_mode === "local" && !status.local_model_present && !showDisclosure && (frontLater || (front !== "connect" && front !== "reconnect")) && (
           <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 10 }}>
             Local cleanup needs a model you haven't added yet (see docs/MODELS.md), so text is pasted as spoken.{" "}
             {publik.available && (
@@ -626,8 +590,18 @@ export function SettingsPane({
         )}
 
         <div id="byo-keys" style={{ marginTop: 22 }}>
-          <SectionTitle sub="Bring your own key — your key, your account, your bill.">Use my own key</SectionTitle>
+          <button
+            onClick={() => setKeysChoice(!keysOpen)}
+            aria-expanded={keysOpen}
+            style={{ all: "unset", cursor: "pointer", display: "block", width: "100%" }}
+          >
+            <SectionTitle sub="Bring your own key — your key, your account, your bill. Not needed with publik API.">
+              {keysOpen ? "▾" : "▸"} Use my own key
+            </SectionTitle>
+          </button>
         </div>
+        {keysOpen && (
+        <>
         <KeyField
           label="OpenAI API key"
           configured={status.has_openai_key}
@@ -692,6 +666,73 @@ export function SettingsPane({
             setTimeout(refresh, 400);
           }}
         />
+        </>
+        )}
+      </Card>
+
+      <Card style={{ marginBottom: 16 }}>
+        <SectionTitle sub="Which engine turns your speech into text.">Speech-to-Text</SectionTitle>
+        <Segmented
+          options={ASR_MODES.map((m) => ({ value: m.value, label: m.label }))}
+          value={settings.asr_mode}
+          onChange={(v) => onChange({ ...settings, asr_mode: v })}
+        />
+        <div style={{ color: theme.textMuted, fontSize: 12.5, marginTop: 10 }}>
+          {ASR_MODES.find((m) => m.value === settings.asr_mode)?.hint}
+        </div>
+        {settings.asr_mode === "cloud" && (
+          <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12.5, color: theme.textMuted, marginBottom: 6 }}>
+                Base URL (blank = OpenAI; e.g. https://api.groq.com/openai/v1 for Groq)
+              </div>
+              <input
+                type="text"
+                value={settings.asr_base_url}
+                placeholder="https://api.groq.com/openai/v1"
+                onChange={(e) => onChange({ ...settings, asr_base_url: e.target.value })}
+                style={{
+                  width: "100%",
+                  background: theme.cardBgSubtle,
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: 10,
+                  padding: "9px 12px",
+                  color: theme.textBody,
+                  fontFamily: font.mono,
+                  fontSize: 13,
+                  outline: "none",
+                  boxSizing: "border-box",
+                }}
+              />
+            </div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 12.5, color: theme.textMuted, marginBottom: 6 }}>
+                Model (e.g. whisper-large-v3-turbo for Groq, whisper-1 for OpenAI)
+              </div>
+              <input
+                type="text"
+                value={settings.asr_model}
+                placeholder="whisper-large-v3-turbo"
+                onChange={(e) => onChange({ ...settings, asr_model: e.target.value })}
+                style={{
+                  width: "100%",
+                  background: theme.cardBgSubtle,
+                  border: `1px solid ${theme.border}`,
+                  borderRadius: 10,
+                  padding: "9px 12px",
+                  color: theme.textBody,
+                  fontFamily: font.mono,
+                  fontSize: 13,
+                  outline: "none",
+                  boxSizing: "border-box",
+                }}
+              />
+            </div>
+          </div>
+        )}
+        <div style={{ color: theme.textMuted, fontSize: 12.5, marginTop: 10 }}>
+          Cloud speech-to-text reuses the OpenAI API key in "Use my own key" above.
+        </div>
       </Card>
 
       <Card style={{ marginBottom: 16 }}>
