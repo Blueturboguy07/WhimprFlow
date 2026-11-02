@@ -88,8 +88,23 @@ if [ -z "${PUBLIK_APP_TOKEN:-}" ] && [ "$SKIP_NOTARIZE" = "0" ]; then
   exit 1
 fi
 if [ -n "${PUBLIK_APP_TOKEN:-}" ]; then
+  # The server accepts exactly pat_<slug>_<32 of [a-z0-9]>. The 0.2.3 Mac build
+  # was fed the right token plus 12 extra characters: it was read off the 0.2.2
+  # binary with `strings | grep -oE 'pat_whimprflow_[A-Za-z0-9_-]+'`, and in the
+  # binary the token runs straight into the next string literals ("publik").
+  # Every link from that build failed. To read the token off an earlier build,
+  # match the exact length: grep -oE 'pat_whimprflow_[a-z0-9]{32}' | head -1.
+  # The Rust side refuses the wrong shape at compile time too (src-tauri/src/
+  # publik.rs); this check fails in a second instead of after the build.
+  APP_TOKEN_RE='^pat_whimprflow_[a-z0-9]{32}$'
+  if ! [[ "$PUBLIK_APP_TOKEN" =~ $APP_TOKEN_RE ]]; then
+    echo "Refusing to build: PUBLIK_APP_TOKEN is not pat_whimprflow_ followed by exactly 32 of [a-z0-9]" >&2
+    echo "(it has ${#PUBLIK_APP_TOKEN} characters; a good one has 47; value not shown)." >&2
+    echo "Reading it off an earlier binary? Use: grep -oE 'pat_whimprflow_[a-z0-9]{32}' | head -1" >&2
+    exit 1
+  fi
   export PUBLIK_APP_TOKEN
-  echo "==> publik app token present (value not shown)"
+  echo "==> publik app token present, shape OK (value not shown)"
 fi
 
 TAURI="$REPO_ROOT/ui/node_modules/.bin/tauri"

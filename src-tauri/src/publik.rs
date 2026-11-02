@@ -30,6 +30,17 @@ pub const ACCOUNT: &str = "publik_api_key";
 /// it). A dev build without it simply has no provisioning rung — BYO and Local
 /// keep working, and the Settings card says "not available in this build".
 const APP_TOKEN: Option<&str> = option_env!("PUBLIK_APP_TOKEN");
+// A token with the wrong shape compiles fine and then fails every link with
+// "Invalid or missing field: app_token." — that shipped in the 0.2.3 Mac build
+// (the right token plus 12 extra characters). Refuse to compile it instead.
+// The message never contains the value.
+const _: () = match APP_TOKEN {
+    Some(t) => assert!(
+        api::is_app_token(t),
+        "PUBLIK_APP_TOKEN must be pat_whimprflow_ followed by exactly 32 of [a-z0-9] and nothing else (value not shown)"
+    ),
+    None => {}
+};
 /// `GET /wallet` at most this often from the Settings pane.
 const WALLET_REFRESH_SECS: u64 = 30;
 

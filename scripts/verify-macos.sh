@@ -213,6 +213,21 @@ else
     note "publik API module is missing from the binary"
   fi
 
+  # An app token is baked in, one of them, with the right start. The value is
+  # matched and counted, never printed. `strings` cannot show where the token
+  # ends: Rust string literals have no terminator, so in the binary the token
+  # runs straight into the next literals (that is how 0.2.3 for macOS got 12
+  # extra characters). The exact length is enforced at compile time instead
+  # (src-tauri/src/publik.rs refuses any other shape).
+  TOKEN_COUNT="$(strings "$BINARY" | grep -oE 'pat_whimprflow_[a-z0-9]{32}' | sort -u | wc -l | tr -d ' ')"
+  if [ "$TOKEN_COUNT" = "1" ]; then
+    pass "one publik app token is compiled in (value not shown)"
+  elif [ "$REQUIRE_NOTARIZED" = "1" ]; then
+    fail "expected one publik app token in the binary, found $TOKEN_COUNT"
+  else
+    note "expected one publik app token in the binary, found $TOKEN_COUNT (dev build?)"
+  fi
+
   "$BINARY" >"$STAGE/run.log" 2>&1 &
   APP_PID=$!
   SETTLED=0

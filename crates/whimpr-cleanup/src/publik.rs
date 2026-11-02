@@ -296,6 +296,51 @@ impl CleanupProvider for PublikProvider {
 
 // ── Provisioning: POST /installs (CONTRACT §3.2) ─────────────────────────────
 
+/// Length of the random part of an app token: `pat_<slug>_<32 of [a-z0-9]>`.
+pub const APP_TOKEN_SECRET_LEN: usize = 32;
+
+/// True when `token` has the one shape `POST /installs` accepts for `slug`:
+/// `pat_`, the slug, `_`, then exactly 32 of `[a-z0-9]` and nothing after. It is
+/// the server's `APP_TOKEN_PATTERN` (publik lib/publik-api/installs/validate.ts)
+/// for one known slug.
+///
+/// A `const fn` so the shell can refuse to compile a build whose baked-in token
+/// has the wrong shape. The 0.2.3 Mac build carried the right token plus 12
+/// extra characters ("publikpublik", read off an older binary with `strings`),
+/// and every link failed with "Invalid or missing field: app_token.".
+pub const fn is_app_token_for(token: &str, slug: &str) -> bool {
+    let t = token.as_bytes();
+    let s = slug.as_bytes();
+    let head = 4 + s.len() + 1; // "pat_" + slug + "_"
+    if s.is_empty() || t.len() != head + APP_TOKEN_SECRET_LEN {
+        return false;
+    }
+    if !(t[0] == b'p' && t[1] == b'a' && t[2] == b't' && t[3] == b'_') || t[head - 1] != b'_' {
+        return false;
+    }
+    let mut i = 0;
+    while i < s.len() {
+        if t[4 + i] != s[i] {
+            return false;
+        }
+        i += 1;
+    }
+    let mut j = head;
+    while j < t.len() {
+        let c = t[j];
+        if !(c.is_ascii_lowercase() || c.is_ascii_digit()) {
+            return false;
+        }
+        j += 1;
+    }
+    true
+}
+
+/// [`is_app_token_for`] for this app's slug (`whimprflow`).
+pub const fn is_app_token(token: &str) -> bool {
+    is_app_token_for(token, APP_SLUG)
+}
+
 /// What the app sends. The app token is an identifier with abuse limits, not a
 /// secret (it ships inside the binary); the server rate-limits this route.
 #[derive(Debug, Clone)]
@@ -833,6 +878,34 @@ mod tests {
             os_version: Some("15.6".into()),
             device_name: Some("Mann's MacBook Pro".into()),
         }
+    }
+
+    #[test]
+    fn app_token_shape_matches_the_server_pattern() {
+        let good = "pat_whimprflow_k3m9x2q7v5n8r4t6w1y0z2b5c8d1f4g7";
+        assert_eq!(good.len(), 47);
+        assert!(is_app_token(good));
+        assert!(is_app_token(&req().app_token));
+        // The 0.2.3 Mac defect: the right token plus the two "publik" literals
+        // that follow it in an older binary's rodata.
+        assert!(!is_app_token(&format!("{good}publikpublik")));
+        assert!(!is_app_token(&format!("{good}a")));
+        assert!(!is_app_token(&good[..46]));
+        assert!(!is_app_token(&format!("{good}\n")));
+        assert!(!is_app_token(&format!(" {good}")));
+        assert!(!is_app_token("pat_whimprflow_K3M9X2Q7V5N8R4T6W1Y0Z2B5C8D1F4G7"));
+        assert!(!is_app_token("pat_whimprflow_k3m9x2q7v5n8r4t6w1y0z2b5c8d1f4g-"));
+        assert!(!is_app_token("pat_whimprflox_k3m9x2q7v5n8r4t6w1y0z2b5c8d1f4g7"));
+        assert!(!is_app_token("pak_whimprflow_k3m9x2q7v5n8r4t6w1y0z2b5c8d1f4g7"));
+        assert!(!is_app_token("pat_whimprflow-k3m9x2q7v5n8r4t6w1y0z2b5c8d1f4g7"));
+        assert!(!is_app_token(""));
+        // Another app's token is not this app's.
+        assert!(is_app_token_for("pat_cue_k3m9x2q7v5n8r4t6w1y0z2b5c8d1f4g7", "cue"));
+        assert!(!is_app_token("pat_cue_k3m9x2q7v5n8r4t6w1y0z2b5c8d1f4g7"));
+        assert!(!is_app_token_for("pat__k3m9x2q7v5n8r4t6w1y0z2b5c8d1f4g7", ""));
+        // Usable in a const context (the shell's compile-time check).
+        const OK: bool = is_app_token("pat_whimprflow_00000000000000000000000000000000");
+        assert!(OK);
     }
 
     #[test]
