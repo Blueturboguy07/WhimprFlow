@@ -1,6 +1,6 @@
 # BLIND-VERIFIER BRANCH ONLY (verify/fix-variations-2). NOT FOR MERGE.
 # Takes the 0.2.3 installer that windows.yml built for fix/windows-first-run
-# @ 6b90ecf (run 41380472340) and runs scripts/verify-windows-variations-2.ps1:
+# @ 6b90ecf (run 41380472340) and runs scripts/verify-windows-variations-3.ps1
 # upgrade over the real 0.2.2 release, the hands-free chord with Right Ctrl,
 # twelve holds in a row, and a hold at launch.
 
@@ -32,16 +32,16 @@ jobs:
           github-token: ${{ github.token }}
           path: installer
 
-      - name: Variations round 2
+      - name: Variations round 3
         shell: powershell
         run: |
           $i = (Get-ChildItem installer -Recurse -Filter '*-setup.exe' | Select-Object -First 1).FullName
           Get-FileHash $i -Algorithm SHA256 | Format-List
-          .\scripts\verify-windows-variations-2.ps1 -Installer $i -OutDir verify-variations-2-out
+          .\scripts\verify-windows-variations-3.ps1 -Installer $i -OutDir verify-variations-3-out
 
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: verify-variations-2
-          path: verify-variations-2-out
+          name: verify-variations-3
+          path: verify-variations-3-out
