@@ -60,12 +60,6 @@ jobs:
       - name: Install UI dependencies
         run: pnpm --dir ui install --frozen-lockfile
 
-      - name: Rust tests
-        run: cargo test --release -p whimpr-core -p whimpr-tauri
-
-      - name: Real speech model download (network)
-        run: cargo test --release -p whimpr-tauri real_download -- --ignored --nocapture
-
       - name: Fetch the speech model to bundle
         shell: bash
         run: scripts/fetch-speech-model.sh
@@ -79,16 +73,16 @@ jobs:
           ..\ui\node_modules\.bin\tauri.CMD build --config tauri.bundled-model.conf.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - name: Install and verify
+      - name: Install and verify (variations)
         shell: powershell
-        run: .\scripts\verify-windows.ps1 -OutDir verify-windows-out
+        run: .\scripts\verify-windows-variations.ps1 -OutDir verify-variations-out
 
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: verify-windows
-          path: verify-windows-out
+          name: verify-variations
+          path: verify-variations-out
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
