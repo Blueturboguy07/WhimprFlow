@@ -4,7 +4,8 @@ import { theme } from "./theme";
 import { Button, Card, Dot, PageTitle, Segmented } from "./ui";
 import { CloudDisclosure } from "./CloudDisclosure";
 import { PublikFirstRun } from "./PublikFirstRun";
-import { ownKeysOpen, publikFront } from "./publikFront";
+import { frontNow, ownKeysChoice, ownKeysOpen, publikFront, setFrontLater, setOwnKeysChoice } from "./publikFront";
+import { useFrontLater } from "./PublikFrontCard";
 import {
   publikAcceptDisclosure,
   publikForgetKey,
@@ -433,6 +434,7 @@ export function SettingsPane({
   setPublik,
   reloadSettings,
   openOwnKeys = 0,
+  onOwnKeysShown,
 }: {
   settings: Settings;
   onChange: (s: Settings) => void;
@@ -447,20 +449,35 @@ export function SettingsPane({
   reloadSettings: () => Promise<void>;
   // Bumped by "Use my own key instead" on the Home / setup card: open the own-key fields and scroll to them.
   openOwnKeys?: number;
+  // Called once the own-key fields were opened for that request, so a later visit to Settings does not scroll again.
+  onOwnKeysShown?: () => void;
 }) {
   const [showDisclosure, setShowDisclosure] = useState(false);
-  // The own-key fields start closed unless the person already uses their own key (publik first).
-  const [keysChoice, setKeysChoice] = useState<boolean | null>(null);
+  // The own-key fields start closed unless the person already uses their own key (publik first), or chose to see
+  // them ("Use my own key instead", or the toggle): that choice is kept for the next visit.
+  const [keysChoice, setKeysChoiceState] = useState<boolean | null>(ownKeysChoice);
+  const setKeysChoice = (open: boolean) => {
+    setOwnKeysChoice(open);
+    setKeysChoiceState(open);
+  };
   const keysOpen = keysChoice ?? ownKeysOpen(settings, status);
-  const [frontLater, setFrontLater] = useState(false);
+  // "Not now" here is the same stored flag as on Home and the setup screen.
+  const later = useFrontLater();
   const front = publikFront(settings, publik, status);
   useEffect(() => {
     if (!openOwnKeys) return;
+    // "Use my own key instead" (Home or the setup screen): the own-key fields, not the publik card on top of them.
+    setFrontLater();
     setKeysChoice(true);
     setTimeout(() => document.getElementById("byo-keys")?.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+    onOwnKeysShown?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only a new request opens the fields
   }, [openOwnKeys]);
   const [busy, setBusy] = useState(false);
   const [publikError, setPublikError] = useState<string | null>(null);
+  // The front card only while no engine works and publik is not the picked engine: with publik picked, the publik
+  // card below covers every state ("Turn on publik API", "Reconnect"), so there is never a second publik block.
+  const frontShown = front === "connect" && settings.cleanup_mode !== "publik" && !showDisclosure && !later;
 
   // Opening Settings is the GET /wallet moment (only when a key exists —
   // Rust decides; a device that never picked publik never phones home).
@@ -473,6 +490,7 @@ export function SettingsPane({
     // Switch mode only. The publik key stays for when they come back; nothing
     // is deleted and the user's own key fields are untouched.
     setShowDisclosure(false);
+    setFrontLater();
     setKeysChoice(true);
     onChange({ ...settings, cleanup_mode: "open_ai" });
     setTimeout(() => document.getElementById("byo-keys")?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
@@ -502,14 +520,16 @@ export function SettingsPane({
 
       <Card style={{ marginBottom: 16 }}>
         <SectionTitle sub="Where your dictation is cleaned up before it's typed.">Cleanup Engine</SectionTitle>
-        {(front === "connect" || front === "reconnect") && !showDisclosure && !frontLater && (
+        {/* One publik block at a time: the front card when no engine works yet; when publik is the engine and this
+            computer was removed from the account, the publik card below says "Reconnect" (not a second block). */}
+        {frontShown && (
           <div style={{ marginBottom: 14 }}>
             <CloudDisclosure
               variant="front"
-              reconnect={front === "reconnect"}
+              now={frontNow(settings, publik, status)}
               onAccept={() => void accept()}
               onOwnKey={useOwnKey}
-              onClose={() => setFrontLater(true)}
+              onClose={setFrontLater}
               busy={busy}
               error={publikError}
               canProvision={publik.can_provision || publik.has_key}
@@ -536,7 +556,8 @@ export function SettingsPane({
           {MODES.find((m) => m.value === settings.cleanup_mode)?.hint}
         </div>
 
-        {settings.cleanup_mode === "local" && !status.local_model_present && !showDisclosure && (frontLater || (front !== "connect" && front !== "reconnect")) && (
+        {/* The front card above already says why Local cannot run ("Now: ..."); this line is for after "Not now". */}
+        {settings.cleanup_mode === "local" && !status.local_model_present && !showDisclosure && !frontShown && (
           <div style={{ fontSize: 12.5, color: theme.textMuted, marginTop: 10 }}>
             Local cleanup needs a model you haven't added yet (see docs/MODELS.md), so text is pasted as spoken.{" "}
             {publik.available && (

@@ -2,6 +2,7 @@ import { font } from "../tokens/values";
 import { theme } from "./theme";
 import { Card, PageTitle } from "./ui";
 import { platformWords, type Status } from "./api";
+import { cleanupEngineTip } from "./publikFront";
 
 type Tip = { emoji: string; title: string; body: string };
 
@@ -30,7 +31,7 @@ export function helpTips(status: Pick<Status, "platform" | "push_to_talk_label">
     {
       emoji: "🔑",
       title: "Pick a cleanup engine",
-      body: `Under Settings → Cleanup Engine, run fully offline (Local), paste exactly what you said (Raw), or add an OpenAI / Anthropic key for cloud cleanup. publik API is the built-in cloud option — already set up, priced per use at 50% of the model's published list price, with a cost and data-path notice shown before it is turned on. Keys are stored in your ${words.keychain}.`,
+      body: cleanupEngineTip(words.keychain),
     },
   ];
 }

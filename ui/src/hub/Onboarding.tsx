@@ -103,12 +103,15 @@ export function Onboarding({
   refresh,
   onEnter,
   publikSlot,
+  badge = "Local",
 }: {
   status: Status;
   refresh: () => void;
   onEnter: () => void;
   // publik first: "WhimprFlow runs on publik API" with its one "Connect publik" button, under the permissions.
   publikSlot?: ReactNode;
+  // The cleanup engine that works now (engineBadge): never "Local" next to "runs on publik API"; null = no badge.
+  badge?: string | null;
 }) {
   // A backstop poll. The state actually flips on the heartbeat Rust pushes at
   // us (`permissions::watch` → `whimpr://permissions`), because this webview
@@ -149,8 +152,7 @@ export function Onboarding({
           <div style={{ fontFamily: font.serif, fontSize: 30, fontWeight: 600, color: theme.textStrong }}>
             Set up WhimprFlow
           </div>
-          {/* "Local" next to "runs on publik API" says two things at once: no badge when the publik card is here. */}
-          {!publikSlot && (
+          {badge && (
             <span
               style={{
                 fontSize: 10,
@@ -164,7 +166,7 @@ export function Onboarding({
                 padding: "2px 7px",
               }}
             >
-              Local
+              {badge}
             </span>
           )}
         </div>

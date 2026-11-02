@@ -1,15 +1,21 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { CloudDisclosure } from "./CloudDisclosure";
+import { PublikFirstRun } from "./PublikFirstRun";
 import { theme } from "./theme";
 import { Button, Card } from "./ui";
-import { PublikFirstRun } from "./PublikFirstRun";
 import { publikAcceptDisclosure, type PublikStatus, type Settings, type Status } from "./api";
-import { FRONT_LATER_KEY, PUBLIK_FRONT, publikFront } from "./publikFront";
+import { PUBLIK_FRONT, frontLater, frontNow, publikFront, setFrontLater, subscribeFrontLater } from "./publikFront";
+
+/** The one stored "Not now" flag (Home, setup screen and Settings read the same one). */
+export function useFrontLater(): boolean {
+  return useSyncExternalStore(subscribeFrontLater, frontLater);
+}
 
 // publik first on the first screen (Home, and the macOS setup screen): "WhimprFlow runs on publik API", no key
 // needed, one "Connect publik" button. The button is the existing consent + `publik_accept_disclosure` (mint ->
 // keychain -> cleanup mode = publik); right after it, the existing first-run card with "Link this computer & pick
-// a plan" (claim_url on publikhq.com) shows here too. "Use my own key instead" opens the own-key fields in Settings.
+// a plan" (claim_url on publikhq.com) shows here too. "Use my own key instead" opens the own-key fields in Settings
+// and, like "Not now", keeps the card away (one stored flag).
 // `compact` (the macOS setup screen, under the permissions): one line and the button first, so it fits the window;
 // the button opens the full card (cost, where your words go, terms), whose button is the consent.
 export function PublikFrontCard({
@@ -29,13 +35,7 @@ export function PublikFrontCard({
   onOwnKey: () => void;
   compact?: boolean;
 }) {
-  const [later, setLater] = useState(() => {
-    try {
-      return localStorage.getItem(FRONT_LATER_KEY) === "1";
-    } catch {
-      return false;
-    }
-  });
+  const later = useFrontLater();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [open, setOpen] = useState(!compact);
@@ -50,6 +50,10 @@ export function PublikFrontCard({
   }
   if (front === "none" || (later && front === "connect")) return null;
 
+  const ownKey = () => {
+    setFrontLater();
+    onOwnKey();
+  };
   const accept = async () => {
     setBusy(true);
     setError(null);
@@ -73,7 +77,7 @@ export function PublikFrontCard({
           <Button variant="accent" onClick={() => setOpen(true)}>
             {front === "reconnect" ? PUBLIK_FRONT.reconnect : PUBLIK_FRONT.button}
           </Button>
-          <Button variant="ghost" size="sm" onClick={onOwnKey}>
+          <Button variant="ghost" size="sm" onClick={ownKey}>
             {PUBLIK_FRONT.ownKey}
           </Button>
         </div>
@@ -86,16 +90,10 @@ export function PublikFrontCard({
       <CloudDisclosure
         variant="front"
         reconnect={front === "reconnect"}
+        now={frontNow(settings, publik, status)}
         onAccept={() => void accept()}
-        onOwnKey={onOwnKey}
-        onClose={() => {
-          try {
-            localStorage.setItem(FRONT_LATER_KEY, "1");
-          } catch {
-            /* per-computer convenience only */
-          }
-          setLater(true);
-        }}
+        onOwnKey={ownKey}
+        onClose={setFrontLater}
         busy={busy}
         error={error}
         canProvision={publik.can_provision || publik.has_key}

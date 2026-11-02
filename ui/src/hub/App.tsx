@@ -10,6 +10,7 @@ import { SettingsPane } from "./SettingsPane";
 import { Help } from "./Help";
 import { ComingSoon } from "./ComingSoon";
 import { PublikFrontCard } from "./PublikFrontCard";
+import { engineBadge } from "./publikFront";
 import { SpeechModelPrompt, MODEL_SIZE_LABEL, mb } from "./SpeechModelPrompt";
 import type { IconName } from "./icons";
 import {
@@ -420,6 +421,7 @@ export function App() {
   if (!(status.accessibility && status.microphone) && !entered) {
     return (
       <Onboarding
+        badge={engineBadge(settings, publik, status)}
         status={status}
         refresh={refresh}
         onEnter={markEntered}
@@ -516,7 +518,7 @@ export function App() {
       )}
       {publik.notice && <PublikBanner notice={publik.notice} onDismiss={() => void publikDismissNotice().then(setPublik)} />}
       <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        <Sidebar page={page} setPage={setPage} />
+        <Sidebar page={page} setPage={setPage} badge={engineBadge(settings, publik, status)} />
         <main style={{ flex: 1, minWidth: 0, overflowY: "auto" }}>
           <div style={{ padding: "36px 44px", margin: "0 auto", maxWidth: 1120 }}>
             {page === "home" && (
@@ -538,6 +540,7 @@ export function App() {
                 setPublik={setPublik}
                 reloadSettings={reloadSettings}
                 openOwnKeys={ownKeysRequest}
+                onOwnKeysShown={() => setOwnKeysRequest(0)}
               />
             )}
             {page === "help" && <Help status={status} />}

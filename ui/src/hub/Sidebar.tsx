@@ -58,7 +58,8 @@ function NavItem({ item, active, onClick }: { item: NavDef; active: boolean; onC
   );
 }
 
-export function Sidebar({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
+// `badge`: the cleanup engine that works now (engineBadge), so it never says "Local" next to "runs on publik API".
+export function Sidebar({ page, setPage, badge = "Local" }: { page: Page; setPage: (p: Page) => void; badge?: string | null }) {
   return (
     <aside
       style={{
@@ -71,7 +72,7 @@ export function Sidebar({ page, setPage }: { page: Page; setPage: (p: Page) => v
         padding: "20px 14px 16px",
       }}
     >
-      {/* Wordmark + Local badge */}
+      {/* Wordmark + engine badge */}
       <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 8px 20px" }}>
         <span
           style={{
@@ -84,21 +85,23 @@ export function Sidebar({ page, setPage }: { page: Page; setPage: (p: Page) => v
         >
           WhimprFlow
         </span>
-        <span
-          style={{
-            fontSize: 10,
-            fontWeight: 700,
-            letterSpacing: 0.4,
-            textTransform: "uppercase",
-            color: theme.accentDeep,
-            background: theme.accentSoft,
-            border: `1px solid ${theme.accentSoftBorder}`,
-            borderRadius: 999,
-            padding: "2px 7px",
-          }}
-        >
-          Local
-        </span>
+        {badge && (
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 700,
+              letterSpacing: 0.4,
+              textTransform: "uppercase",
+              color: theme.accentDeep,
+              background: theme.accentSoft,
+              border: `1px solid ${theme.accentSoftBorder}`,
+              borderRadius: 999,
+              padding: "2px 7px",
+            }}
+          >
+            {badge}
+          </span>
+        )}
       </div>
 
       <nav style={{ display: "flex", flexDirection: "column", gap: 3 }}>

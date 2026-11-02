@@ -24,6 +24,7 @@ export function CloudDisclosure({
   canProvision,
   variant = "settings",
   reconnect = false,
+  now = null,
 }: {
   onAccept: () => void;
   onOwnKey: () => void;
@@ -33,6 +34,8 @@ export function CloudDisclosure({
   canProvision: boolean;
   variant?: "settings" | "front";
   reconnect?: boolean;
+  /** front: the engine picked now and why it cannot run (frontNow), so the card agrees with the picker. */
+  now?: string | null;
 }) {
   if (variant === "front") {
     return (
@@ -55,6 +58,7 @@ export function CloudDisclosure({
           </span>
         </div>
         <p style={{ color: theme.textBody, fontSize: 13.5, lineHeight: 1.5, margin: "8px 0 0" }}>{PUBLIK_FRONT.lead}</p>
+        {now && <p style={{ color: theme.textMuted, fontSize: 12.5, lineHeight: 1.5, margin: "6px 0 0" }}>{now}</p>}
         <p style={{ color: theme.textMuted, fontSize: 12.5, lineHeight: 1.5, margin: "8px 0 0" }}>
           <b>Cost.</b> {PUBLIK_FRONT.cost} <b>Where your words go.</b> {PUBLIK_FRONT.data}
         </p>
