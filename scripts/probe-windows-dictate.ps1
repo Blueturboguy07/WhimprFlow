@@ -29,6 +29,57 @@ public static class ProbeKeys {
   [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int vk);
+  [StructLayout(LayoutKind.Explicit, Size = 40)]
+  public struct INPUT {
+    [FieldOffset(0)] public uint type;
+    [FieldOffset(8)] public ushort wVk;
+    [FieldOffset(10)] public ushort wScan;
+    [FieldOffset(12)] public uint dwFlags;
+    [FieldOffset(16)] public uint time;
+    [FieldOffset(24)] public UIntPtr dwExtraInfo;
+  }
+  [DllImport("user32.dll")] public static extern uint SendInput(uint n, INPUT[] inputs, int size);
+  public static uint SendScan(ushort scan, bool ext, bool up) {
+    var i = new INPUT(); i.type = 1; i.wVk = 0; i.wScan = scan;
+    i.dwFlags = 0x8u | (ext ? 0x1u : 0u) | (up ? 0x2u : 0u);
+    return SendInput(1, new INPUT[] { i }, 40);
+  }
+}
+// A WH_KEYBOARD_LL hook in THIS process: proves whether the runner delivers
+// synthetic keys to low-level hooks at all, and what vkCode they carry.
+public static class SelfHook {
+  delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
+  [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int id, HookProc cb, IntPtr hMod, uint tid);
+  [DllImport("user32.dll")] static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+  [DllImport("user32.dll")] static extern bool UnhookWindowsHookEx(IntPtr hhk);
+  [DllImport("user32.dll")] static extern int GetMessage(out MSG msg, IntPtr hWnd, uint min, uint max);
+  [DllImport("user32.dll")] static extern bool PostThreadMessage(uint tid, uint msg, IntPtr w, IntPtr l);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  [DllImport("kernel32.dll", CharSet = CharSet.Auto)] static extern IntPtr GetModuleHandle(string name);
+  [StructLayout(LayoutKind.Sequential)] struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public int x; public int y; }
+  [StructLayout(LayoutKind.Sequential)] struct KBDLLHOOKSTRUCT { public uint vkCode; public uint scanCode; public uint flags; public uint time; public UIntPtr dwExtraInfo; }
+  static System.Collections.Generic.List<string> seen = new System.Collections.Generic.List<string>();
+  static HookProc keep; static uint tid; static System.Threading.Thread t;
+  public static void Start() {
+    t = new System.Threading.Thread(() => {
+      tid = GetCurrentThreadId(); keep = Cb;
+      IntPtr h = SetWindowsHookEx(13, keep, GetModuleHandle(null), 0);
+      lock (seen) seen.Add("hook handle=" + h + " lastError=" + Marshal.GetLastWin32Error());
+      MSG m; while (GetMessage(out m, IntPtr.Zero, 0, 0) > 0) { }
+      UnhookWindowsHookEx(h);
+    });
+    t.IsBackground = true; t.Start(); System.Threading.Thread.Sleep(800);
+  }
+  static IntPtr Cb(int code, IntPtr w, IntPtr l) {
+    if (code >= 0) {
+      var k = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(l, typeof(KBDLLHOOKSTRUCT));
+      lock (seen) seen.Add("msg=0x" + w.ToInt64().ToString("X") + " vk=0x" + k.vkCode.ToString("X") + " scan=0x" + k.scanCode.ToString("X") + " flags=0x" + k.flags.ToString("X"));
+    }
+    return CallNextHookEx(IntPtr.Zero, code, w, l);
+  }
+  public static string[] Drain() { lock (seen) { var a = seen.ToArray(); seen.Clear(); return a; } }
+  public static void Stop() { PostThreadMessage(tid, 0x12, IntPtr.Zero, IntPtr.Zero); }
 }
 "@
 
@@ -166,34 +217,54 @@ $before = ReadLog $run.Err
 # -- Probe C1: what the Home screen says ----------------------------------------
 Write-Host ""
 Write-Host "Probe C: Hub text"
-$home = HubNames
-$home | Out-File -Encoding UTF8 (Join-Path $OutDir 'hub-home-names.txt')
-Note ("Home: " + $home.Count + " names; mentions Right Ctrl=" + (($home -match 'Right Ctrl').Count) + ", Fn=" + (($home -match '\bFn\b').Count) + ", Ctrl\+Shift\+Space=" + (($home -match 'Ctrl\+Shift\+Space').Count))
-foreach ($n in ($home | Where-Object { $_ -match 'hold|Hold|key|Key|Fn|Ctrl' })) { Note "  Home text: $n" }
+$homeNames = HubNames
+$homeNames | Out-File -Encoding UTF8 (Join-Path $OutDir 'hub-home-names.txt')
+Note ("Home: " + $homeNames.Count + " names; mentions Right Ctrl=" + (($homeNames -match 'Right Ctrl').Count) + ", Fn=" + (($homeNames -match '\bFn\b').Count) + ", Ctrl\+Shift\+Space=" + (($homeNames -match 'Ctrl\+Shift\+Space').Count))
+foreach ($n in ($homeNames | Where-Object { $_ -match 'hold|Hold|key|Key|Fn|Ctrl' })) { Note "  Home text: $n" }
 
 # Focus Notepad-free target: put the Hub in front so the paste (if any) is visible.
-# -- Probe A: Right Ctrl with no microphone ------------------------------------
+# -- Probe A: Right Ctrl with no microphone, three injection methods -----------
+# A self-hook in this process records what a WH_KEYBOARD_LL hook sees on this
+# runner, so "WhimprFlow logged nothing" can be told apart from "the runner
+# delivered nothing".
 Write-Host ""
 Write-Host "Probe A: Right Ctrl held 1.5 s (no microphone on this runner)"
-KeyDown 0xA3 0x1D $true
-Start-Sleep -Milliseconds 700
-Shot '1-rctrl-held'
-Start-Sleep -Milliseconds 800
-KeyUp 0xA3 0x1D $true
-Start-Sleep -Seconds 6
-Shot '2-after-rctrl'
-$afterA = ReadLog $run.Err
-$deltaA = $afterA.Substring([Math]::Min($before.Length, $afterA.Length))
-$deltaA | Out-File -Encoding UTF8 (Join-Path $OutDir 'delta-A-rctrl.log')
-Note ("A: new log lines after Right Ctrl:`n" + $deltaA)
-Note ("A: 'mic capture failed' logged = " + ($deltaA -match 'mic capture failed'))
-Note ("A: 'no audio captured' logged = " + ($deltaA -match 'no audio captured'))
-Note ("A: a user-facing diagnostic ('[whimpr] ' + warning sign, i.e. diag::report) logged = " + ($deltaA -match '\[whimpr\] \S+ (No audio came in|Microphone access blocked|Right Ctrl isn''t wired up|Couldn''t|Didn''t|Speech model)'))
-$banner = $null
-foreach ($h in @('No audio came in', 'Microphone access blocked', "Right Ctrl isn't wired up", 'Speech model not installed', "Couldn't transcribe that", "Didn't catch that")) {
-  if (FindByName $h 1) { $banner = $h; break }
+[SelfHook]::Start()
+Note ("A: self-hook: " + ([SelfHook]::Drain() -join ' | '))
+$baseShot = (Get-FileHash (Join-Path $OutDir '0-launched.png') -Algorithm MD5).Hash
+$methods = @(
+  @{ Tag = 'A1-keybd_event-vk0xA3-ext'; Down = { KeyDown 0xA3 0x1D $true };  Up = { KeyUp 0xA3 0x1D $true } },
+  @{ Tag = 'A2-SendInput-scan0x1D-ext'; Down = { [ProbeKeys]::SendScan(0x1D, $true, $false) | Out-Null }; Up = { [ProbeKeys]::SendScan(0x1D, $true, $true) | Out-Null } },
+  @{ Tag = 'A3-keybd_event-vk0xA3-plain'; Down = { KeyDown 0xA3 0 $false }; Up = { KeyUp 0xA3 0 $false } }
+)
+foreach ($m in $methods) {
+  $tag = $m.Tag
+  $before = ReadLog $run.Err
+  [SelfHook]::Drain() | Out-Null
+  & $m.Down
+  Start-Sleep -Milliseconds 600
+  $held = [ProbeKeys]::GetAsyncKeyState(0xA3)
+  Shot "1-$tag-held"
+  Start-Sleep -Milliseconds 900
+  & $m.Up
+  Start-Sleep -Seconds 5
+  $after = ReadLog $run.Err
+  $delta = $after.Substring([Math]::Min($before.Length, $after.Length))
+  $delta | Out-File -Encoding UTF8 (Join-Path $OutDir "delta-$tag.log")
+  $seen = [SelfHook]::Drain()
+  $heldShot = (Get-FileHash (Join-Path $OutDir "1-$tag-held.png") -Algorithm MD5).Hash
+  Note ("$tag`: GetAsyncKeyState(VK_RCONTROL) while held = 0x" + ($held -band 0xFFFF).ToString('X'))
+  Note ("$tag`: self-hook saw: " + $(if ($seen.Count) { $seen -join ' | ' } else { '(nothing)' }))
+  Note ("$tag`: screen changed while held (pill) = " + ($heldShot -ne $baseShot))
+  Note ("$tag`: WhimprFlow log lines: " + $(if ($delta.Trim()) { "`n$delta" } else { '(none)' }))
+  Note ("$tag`: 'mic capture failed' logged = " + ($delta -match 'mic capture failed') + "; 'no audio captured' logged = " + ($delta -match 'no audio captured') + "; diag::report line logged = " + ($delta -match 'No audio came in|Microphone access blocked|wired up|Couldn|Didn|Speech model'))
+  $banner = $null
+  foreach ($h in @('No audio came in', 'Microphone access blocked', "Right Ctrl isn't wired up", 'Speech model not installed', "Couldn't transcribe that", "Didn't catch that")) {
+    if (FindByName $h 1) { $banner = $h; break }
+  }
+  Note ("$tag`: Hub banner/pill error visible through UI Automation = " + $(if ($banner) { $banner } else { 'NONE' }))
 }
-Note ("A: Hub banner/pill error visible through UI Automation = " + $(if ($banner) { $banner } else { 'NONE' }))
+[SelfHook]::Stop()
 
 # -- Probe B: Ctrl+Shift+Space --------------------------------------------------
 Write-Host ""
