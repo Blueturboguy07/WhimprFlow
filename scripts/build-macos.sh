@@ -154,8 +154,14 @@ APP="$TARGET_DIR/release/bundle/macos/WhimprFlow.app"
 DMG="$(/usr/bin/find "$TARGET_DIR/release/bundle/dmg" -name "*.dmg" -print -quit 2>/dev/null || true)"
 WORKER_DEST="$APP/Contents/MacOS/whimpr-llm-worker"
 cp "$REPO_ROOT/target/release/whimpr-llm-worker" "$WORKER_DEST"
-codesign --force --sign "$IDENTITY" "$WORKER_DEST"
-codesign --force --sign "$IDENTITY" "$APP"
+# Re-sealing must repeat what Tauri's own signing did: the hardened runtime, a
+# secure timestamp and (for the app) the entitlements. A bare `codesign
+# --force --sign` strips all three — Apple then rejects notarization, and the
+# microphone entitlement that dictation needs under the hardened runtime is gone.
+codesign --force --options runtime --timestamp --sign "$IDENTITY" "$WORKER_DEST"
+codesign --force --options runtime --timestamp \
+  --entitlements "$REPO_ROOT/src-tauri/Entitlements.plist" \
+  --sign "$IDENTITY" "$APP"
 
 [ -d "$APP" ] || { echo "No WhimprFlow.app was produced." >&2; exit 1; }
 
