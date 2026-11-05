@@ -1,0 +1,32 @@
+{
+  "max_files": 12,
+  "max_lines": 400,
+  "default_branch": "main",
+  "humans": [
+    "Blueturboguy07"
+  ],
+  "setup_cmds": [],
+  "test_cmds": [
+    "cargo test"
+  ],
+  "test_os": [
+    "windows-latest"
+  ],
+  "node_version": "22",
+  "setup_uv": false,
+  "forbidden_paths": [
+    ".github/workflows/**",
+    "**/notarize*",
+    "**/release.sh",
+    "scripts/sign*",
+    ".loop/policy.json",
+    ".loop/policy/**"
+  ],
+  "acceptance": {
+    "timeout_min": 30,
+    "runs": 2
+  },
+  "release": {
+    "dispatch_workflow": null
+  }
+}
