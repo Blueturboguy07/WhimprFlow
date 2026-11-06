@@ -1,0 +1,202 @@
+# Builds the files of a publik telemetry release: the macOS app (Apple silicon)
+# and the Windows NSIS installer, both UNSIGNED, as workflow artifacts.
+#
+# It never creates, changes or publishes a release, and it has no Apple
+# certificate. The macOS app is signed, notarized, stapled and packed into the
+# dmg on the release Mac (the same steps as scripts/build-macos.sh from "copy
+# the worker" on), then checked, then attached to a DRAFT release by hand.
+#
+# Both jobs start the built app against a local listener and fail when the
+# usage counts are wrong (.github/scripts/publik-telemetry-smoke.py).
+
+name: publik build
+
+on:
+  push:
+    branches: ["telemetry/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS arm64 (unsigned app)
+    runs-on: macos-14
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install UI dependencies
+        run: pnpm --dir ui install --frozen-lockfile
+
+      - name: Require the publik app token
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+        run: |
+          if ! [[ "$PUBLIK_APP_TOKEN" =~ ^pat_whimprflow_[a-z0-9]{32}$ ]]; then
+            echo "::error::PUBLIK_APP_TOKEN is missing or has the wrong shape (value not shown)."
+            exit 1
+          fi
+          echo "publik app token present, shape OK (value not shown)"
+
+      - name: Fetch the speech model to bundle
+        run: scripts/fetch-speech-model.sh
+
+      # Same order as scripts/build-macos.sh: the worker, then `tauri build`.
+      - name: Build the local-LLM worker
+        run: cargo build --release -p whimpr-llm-worker
+
+      - name: Build the app (unsigned)
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+        run: |
+          cd src-tauri
+          ../ui/node_modules/.bin/tauri build --bundles app --config tauri.bundled-model.conf.json
+
+      - name: Add the worker, check the bundle, pack it
+        run: |
+          set -euo pipefail
+          APP=target/release/bundle/macos/WhimprFlow.app
+          cp target/release/whimpr-llm-worker "$APP/Contents/MacOS/whimpr-llm-worker"
+          WANT="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          GOT="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+          [ "$GOT" = "$WANT" ] || { echo "::error::the bundle says version $GOT, Cargo.toml says $WANT"; exit 1; }
+          echo "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002  $APP/Contents/Resources/models/ggml-base.en.bin" | shasum -a 256 -c -
+          # Counted, never printed (same check as scripts/verify-macos.sh).
+          TOKENS="$(strings "$APP/Contents/MacOS/whimpr-tauri" | grep -oE 'pat_whimprflow_[a-z0-9]{32}' | sort -u | wc -l | tr -d ' ')"
+          [ "$TOKENS" = "1" ] || { echo "::error::expected one publik app token in the binary, found $TOKENS"; exit 1; }
+          echo "version $GOT, architectures: $(lipo -archs "$APP/Contents/MacOS/whimpr-tauri")"
+          find "$APP" -type f | sed "s|^$APP/||" | sort
+          ditto -c -k --keepParent "$APP" WhimprFlow-macos-arm64-unsigned.app.zip
+
+      - name: Upload the unsigned app
+        uses: actions/upload-artifact@v4
+        with:
+          name: whimprflow-macos-arm64-unsigned
+          path: WhimprFlow-macos-arm64-unsigned.app.zip
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Usage counts check (start the unsigned app on the runner)
+        run: python3 .github/scripts/publik-telemetry-smoke.py target/release/bundle/macos/WhimprFlow.app/Contents/MacOS/whimpr-tauri telemetry-smoke-macos.json
+
+      - name: Upload the check result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telemetry-smoke-macos
+          path: telemetry-smoke-macos.json
+          retention-days: 7
+
+  # Same steps as .github/workflows/windows.yml, without the release upload.
+  windows:
+    name: Windows x64 (NSIS installer, unsigned)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # whisper-rs-sys runs bindgen, which needs libclang 18; the runner's LLVM
+      # is newer. Same side-load as windows.yml.
+      - name: libclang 18 for bindgen
+        shell: pwsh
+        run: |
+          python -m pip install --quiet libclang==18.1.1
+          $dir = (python -c "import clang, os; print(os.path.dirname(clang.__file__) + r'\native')").Trim()
+          "LIBCLANG_PATH=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install UI dependencies
+        run: pnpm --dir ui install --frozen-lockfile
+
+      - name: Rust tests
+        run: cargo test --release -p whimpr-core -p whimpr-tauri
+
+      - name: Fetch the speech model to bundle
+        shell: bash
+        run: scripts/fetch-speech-model.sh
+
+      - name: Build the installer
+        shell: pwsh
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+        run: |
+          if ($env:PUBLIK_APP_TOKEN -notmatch '^pat_whimprflow_[a-z0-9]{32}$') { Write-Host "::error::PUBLIK_APP_TOKEN is missing or has the wrong shape (value not shown)."; exit 1 }
+          Set-Location src-tauri
+          ..\ui\node_modules\.bin\tauri.CMD build --config tauri.bundled-model.conf.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: whimprflow-windows-installer
+          path: target/release/bundle/nsis/*-setup.exe
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Usage counts check (install, then start the app)
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem target\release\bundle\nsis\*-setup.exe | Select-Object -First 1).FullName
+          Write-Host "Installer: $installer"
+          $p = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Write-Host "::error::silent install exited $($p.ExitCode)"; exit 1 }
+          $exe = (Get-ChildItem (Join-Path $env:LOCALAPPDATA 'WhimprFlow') -Filter '*.exe' | Where-Object { $_.Name -notmatch 'uninstall' } | Select-Object -First 1).FullName
+          if (-not $exe) { Write-Host "::error::no app .exe after the install"; exit 1 }
+          python .github\scripts\publik-telemetry-smoke.py $exe telemetry-smoke-windows.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # The repo's own Windows release check. DO_NOT_TRACK: a CI runner is not a user.
+      - name: Install and verify
+        shell: powershell
+        env:
+          DO_NOT_TRACK: "1"
+        run: .\scripts\verify-windows.ps1 -OutDir verify-windows-out
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-windows
+          path: |
+            verify-windows-out
+            telemetry-smoke-windows.json
+          retention-days: 7

@@ -39,7 +39,22 @@ jobs:
       - id: check
         env:
           CERT: ${{ secrets.APPLE_CERT_P12_BASE64 }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          # A release that already holds a dmg keeps it. Such a release was built,
+          # notarized, checked and filled before its tag existed (the publik
+          # telemetry builds are made this way: .github/workflows/publik-build.yml).
+          # The upload step below would replace that dmg, so nothing is built.
+          # The list, not releases/tags/<tag>: the list also shows a draft.
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            NAMES="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" | jq -r --arg tag "$GITHUB_REF_NAME" '.[] | select(.tag_name == $tag) | .assets[].name')"
+            if printf '%s\n' "$NAMES" | grep '\.dmg$' >/dev/null; then
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::Release $GITHUB_REF_NAME already holds a dmg. Nothing is built and nothing is replaced."
+              exit 0
+            fi
+          fi
           if [ -n "$CERT" ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; else
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "::notice::APPLE_CERT_P12_BASE64 is not set — skipping the CI macOS release build."
@@ -106,7 +121,10 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: scripts/build-macos.sh
 
+      # DO_NOT_TRACK: the check starts the app, and a CI runner is not a user.
       - name: Verify the shipped bundle
+        env:
+          DO_NOT_TRACK: "1"
         run: scripts/verify-macos.sh --require-notarized
 
       - name: Attach the dmg to the release

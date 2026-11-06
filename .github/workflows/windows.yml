@@ -24,7 +24,34 @@ permissions:
   contents: write
 
 jobs:
+  # A release that already holds a Windows installer keeps it. Such a release
+  # was built, checked and filled before it was published (the publik telemetry
+  # builds are made this way: .github/workflows/publik-build.yml). To replace an
+  # installer on purpose, delete it from the release first.
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TAG" ]; then echo "build=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          # The list, not releases/tags/<tag>: the list also shows a draft.
+          NAMES="$(gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" | jq -r --arg tag "$TAG" '.[] | select(.tag_name == $tag) | .assets[].name')"
+          if printf '%s\n' "$NAMES" | grep -- '-setup\.exe$' >/dev/null; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release $TAG already holds a Windows installer. Nothing is built and nothing is replaced."
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
   windows:
+    needs: guard
+    if: needs.guard.outputs.build == 'true'
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
@@ -79,8 +106,11 @@ jobs:
           ..\ui\node_modules\.bin\tauri.CMD build --config tauri.bundled-model.conf.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      # DO_NOT_TRACK: the app sends publik usage counts, and a CI runner is not a user.
       - name: Install and verify
         shell: powershell
+        env:
+          DO_NOT_TRACK: "1"
         run: .\scripts\verify-windows.ps1 -OutDir verify-windows-out
 
       - name: Upload evidence
@@ -102,4 +132,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
-        run: gh release upload "$TAG" target/release/bundle/nsis/*-setup.exe --clobber
+        # No --clobber: an installer that is already on the release is never replaced.
+        run: gh release upload "$TAG" target/release/bundle/nsis/*-setup.exe
