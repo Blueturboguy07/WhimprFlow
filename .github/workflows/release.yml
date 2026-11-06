@@ -27,6 +27,10 @@ on:
 permissions:
   contents: write
 
+# publik telemetry is off on build machines: a test run is not a user.
+env:
+  DO_NOT_TRACK: "1"
+
 jobs:
   # Tag builds need the Apple certificate secrets. Until they are set, releases
   # are cut locally with scripts/build-macos.sh (which bundles the speech model
