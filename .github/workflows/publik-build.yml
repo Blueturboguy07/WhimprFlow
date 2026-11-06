@@ -22,10 +22,22 @@ permissions:
 jobs:
   macos:
     name: macOS arm64 (unsigned app)
-    runs-on: macos-14
+    # macos-26: its Xcode has the macOS 26 SDK, the SDK the 0.2.5 dmg was linked with.
+    runs-on: macos-26
     timeout-minutes: 90
+    env:
+      # The app says it runs on macOS 14 (tauri.conf.json). `tauri build` sets this
+      # for the app itself; the worker's C++ would take the runner's own macOS
+      # version without it, and then not start on an older Mac.
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Show the toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          clang --version
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -85,6 +97,7 @@ jobs:
           TOKENS="$(strings "$APP/Contents/MacOS/whimpr-tauri" | grep -oE 'pat_whimprflow_[a-z0-9]{32}' | sort -u | wc -l | tr -d ' ')"
           [ "$TOKENS" = "1" ] || { echo "::error::expected one publik app token in the binary, found $TOKENS"; exit 1; }
           echo "version $GOT, architectures: $(lipo -archs "$APP/Contents/MacOS/whimpr-tauri")"
+          for BIN in whimpr-tauri whimpr-llm-worker; do echo "$BIN:"; vtool -show-build "$APP/Contents/MacOS/$BIN" | grep -E 'minos|sdk'; done
           find "$APP" -type f | sed "s|^$APP/||" | sort
           ditto -c -k --keepParent "$APP" WhimprFlow-macos-arm64-unsigned.app.zip
 
