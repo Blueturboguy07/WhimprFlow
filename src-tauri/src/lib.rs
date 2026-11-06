@@ -15,6 +15,9 @@ mod local_llm;
 mod paste;
 mod permissions;
 mod publik;
+// publik usage counts (telemetry v1). One vendored file, kept as publik ships it.
+#[rustfmt::skip]
+mod publik_telemetry;
 #[cfg(target_os = "windows")]
 mod win;
 #[cfg(target_os = "linux")]
@@ -465,6 +468,13 @@ pub fn run() {
             publik::publik_open_link
         ])
         .setup(|app| {
+            // publik usage counts: `app_opened` now, `active_session` every 30
+            // minutes. It returns at once (own thread, 5 s limit, never panics)
+            // and sends no content. The key is the publik key this app already
+            // holds, or nothing when publik API is not connected. Off with
+            // DO_NOT_TRACK=1. See the README, "Usage counts".
+            publik_telemetry::start("whimprflow", env!("CARGO_PKG_VERSION"), Some(Box::new(publik::read_key)));
+
             // Regular app: shows in the Dock with a normal, focusable main window.
             // (Can switch to a menu-bar-only accessory app later for the Wispr look.)
             #[cfg(target_os = "macos")]

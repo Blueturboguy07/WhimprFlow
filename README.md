@@ -143,6 +143,12 @@ why it looked like nothing was happening at all). If you still hit this:
   `.exe` from PowerShell on Windows) and hold the key once — every failure
   path also logs a `[whimpr]`-prefixed line explaining what happened.
 
+## Usage counts
+
+WhimprFlow sends two small usage events to publik: `app_opened` at each launch and `active_session` every 30 minutes while it runs. An event holds the app name, the app version, the operating system, the CPU type and a random install ID. It holds nothing else: no audio, no transcript, no file name, none of your own provider keys. When publik API is connected, the event goes out with the app's publik key, so publik counts one account and not one computer.
+
+To turn it off, set `DO_NOT_TRACK=1` (or `PUBLIK_TELEMETRY=0`) in the environment, or put `"usage": false` in `consent.json` in the publik folder (`~/Library/Application Support/publik` on macOS, `%LOCALAPPDATA%\publik` on Windows). Then nothing is sent and no install ID is made. Details: https://publikhq.com/skills/telemetry.md
+
 ## Notes & disclaimers
 
 - **Not affiliated with, endorsed by, or connected to Wispr Flow or any other product.** WhimprFlow is an independent, from-scratch reimplementation of the dictation workflow, with its own name, branding, colors, strings, and code. No third-party code or assets are included.
