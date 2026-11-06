@@ -22,7 +22,8 @@ permissions:
 jobs:
   macos:
     name: macOS arm64 (unsigned app)
-    # macos-26: its Xcode has the macOS 26 SDK, the SDK the 0.2.5 dmg was linked with.
+    # Same toolchain as the Mac that built the 0.2.5 dmg: Xcode 26.2 (macOS 26.2
+    # SDK) and Rust 1.97.1.
     runs-on: macos-26
     timeout-minutes: 90
     env:
@@ -33,14 +34,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Show the toolchain
+      - name: Select Xcode 26.2
         run: |
+          X=/Applications/Xcode_26.2.app
+          [ -d "$X" ] || X="$(ls -d /Applications/Xcode_26*.app | sort -V | head -1)"
+          sudo xcode-select -s "$X/Contents/Developer"
           sw_vers
           xcodebuild -version
           clang --version
 
-      - uses: dtolnay/rust-toolchain@stable
+      # whisper.cpp's Metal code asks "is this macOS 15?" at run time (@available),
+      # because the app also runs on macOS 14. That check lives in clang's runtime
+      # library, which rustc does not link by itself ("___isPlatformVersionAtLeast"
+      # is then undefined in a clean build). llama-cpp-sys-2 links the same library
+      # in its own build script for the worker.
+      - name: Link clang's runtime library
+        run: |
+          RT="$(xcrun clang --print-resource-dir)/lib/darwin/libclang_rt.osx.a"
+          [ -f "$RT" ] || { echo "::error::no libclang_rt.osx.a at $RT"; exit 1; }
+          echo "RUSTFLAGS=-C link-arg=$RT" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.97.1"
           targets: aarch64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
