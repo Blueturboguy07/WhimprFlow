@@ -211,6 +211,10 @@ fn clean_transcript(raw: &str) -> String {
             .and_then(|m| m.lock().unwrap().as_ref().map(|p| p.cleanup(&raw_norm, &ctx)))
             .or_else(run_local),
         CleanupMode::Local => run_local(),
+        CleanupMode::Publik => {
+            eprintln!("[whimpr:linux] publik API cleanup is not available on Linux yet — attempting local cleanup");
+            run_local()
+        }
         CleanupMode::Raw => None,
     };
     match result {
