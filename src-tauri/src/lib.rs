@@ -15,9 +15,7 @@ mod local_llm;
 mod paste;
 mod permissions;
 mod publik;
-// publik usage counts (telemetry v1). One vendored file, kept as publik ships it.
-#[rustfmt::skip]
-mod publik_telemetry;
+mod publik_gate;
 #[cfg(target_os = "windows")]
 mod win;
 #[cfg(target_os = "linux")]
@@ -86,7 +84,7 @@ fn position_overlay(w: &WebviewWindow) {
     );
 }
 
-fn build_overlay(app: &tauri::App) -> tauri::Result<WebviewWindow> {
+fn build_overlay(app: &tauri::AppHandle) -> tauri::Result<WebviewWindow> {
     let overlay = WebviewWindowBuilder::new(
         app,
         OVERLAY_LABEL,
@@ -111,7 +109,7 @@ fn build_overlay(app: &tauri::App) -> tauri::Result<WebviewWindow> {
     Ok(overlay)
 }
 
-fn build_hub(app: &tauri::App) -> tauri::Result<WebviewWindow> {
+fn build_hub(app: &tauri::AppHandle) -> tauri::Result<WebviewWindow> {
     WebviewWindowBuilder::new(app, HUB_LABEL, WebviewUrl::App("index.html".into()))
         .title("WhimprFlow")
         .inner_size(920.0, 640.0)
@@ -158,6 +156,9 @@ fn get_settings() -> whimpr_core::Settings {
 
 #[tauri::command]
 fn set_settings(app: tauri::AppHandle, settings: whimpr_core::Settings) {
+    // Settings → Cleanup Engine is the same answer the sign-in gate asked for:
+    // keep the two in step, so the gate does not ask again at the next start.
+    publik::sync_choice(&hotkey::current_settings(), &settings);
     hotkey::update_settings(settings);
     // The hands-free hotkey may have changed — re-register it from the new
     // settings so a customized combo takes effect without a relaunch.
@@ -413,7 +414,74 @@ fn apply_hands_free_shortcut(app: &tauri::AppHandle) {
     }
 }
 
+/// The app proper, once the sign-in gate let the person through: the overlay, the
+/// Hub, the Fn key, the hands-free hotkey, the permission watcher and the tray.
+/// Last, the gate's answer goes to Settings → Cleanup Engine and the wallet it read
+/// goes to the Settings card.
+fn start_app(app: &tauri::AppHandle, (_key, wallet, choice): publik_gate::Gate) -> tauri::Result<()> {
+    build_overlay(app)?;
+    let hub = build_hub(app)?;
+    let _ = hub.show();
+    let _ = hub.set_focus();
+    // Closing the Hub via the X button should hide it (dictation keeps
+    // running from the tray), not destroy the window — otherwise "Open
+    // WhimprFlow" in the tray has nothing left to show. macOS already
+    // keeps the app (and its Dock icon) alive on window close, so this
+    // matters most on Windows/Linux, but is harmless everywhere.
+    hub.on_window_event({
+        let app_handle = app.clone();
+        move |event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                if let Some(w) = app_handle.get_webview_window(HUB_LABEL) {
+                    let _ = w.hide();
+                }
+            }
+        }
+    });
+
+    // Wire the Fn key to the pill via the real state machine.
+    hotkey::install(app.clone());
+
+    // Register the customizable hands-free hotkey (default Cmd+Shift+Space).
+    apply_hands_free_shortcut(app);
+
+    // Keep the permission rows honest without the Hub having to be awake
+    // to ask. This is what makes the setup screen's promise ("turns green
+    // the moment macOS applies it — no relaunch needed") actually true:
+    // the Hub's own timer stops within seconds of its window going away,
+    // and the reader is granting from System Settings precisely then.
+    permissions::watch(app.clone());
+
+    let open = MenuItem::with_id(app, "open", "Open WhimprFlow", true, None::<&str>)?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit WhimprFlow", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &sep, &quit])?;
+
+    let mut tray = TrayIconBuilder::new()
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_hub(app),
+            "quit" => app.exit(0),
+            _ => {}
+        });
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray = tray.icon(icon);
+    }
+    tray.build(app)?;
+
+    publik::apply_choice(choice.as_deref());
+    publik::remember_wallet(&wallet);
+    Ok(())
+}
+
 pub fn run() {
+    // Builder check (publik setup skill): PUBLIK_SELF_TEST=1 prints one line and exits.
+    if std::env::var_os("PUBLIK_SELF_TEST").is_some() {
+        println!("{}", publik::self_test());
+        return;
+    }
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default();
     // Relaunching the app (double-clicking the exe/installer shortcut again) must
@@ -441,6 +509,8 @@ pub fn run() {
                 })
                 .build(),
         )
+        // The sign-in gate's page (publik_gate.rs) is served on this scheme.
+        .register_uri_scheme_protocol(publik_gate::SCHEME, publik_gate::protocol)
         .invoke_handler(tauri::generate_handler![
             get_settings,
             set_settings,
@@ -468,70 +538,23 @@ pub fn run() {
             publik::publik_open_link
         ])
         .setup(|app| {
-            // publik usage counts: `app_opened` now, `active_session` every 30
-            // minutes. It returns at once (own thread, 5 s limit, never panics)
-            // and sends no content. The key is the publik key this app already
-            // holds, or nothing when publik API is not connected. Off with
-            // DO_NOT_TRACK=1. See the README, "Usage counts".
-            publik_telemetry::start("whimprflow", env!("CARGO_PKG_VERSION"), Some(Box::new(publik::read_key)));
-
             // Regular app: shows in the Dock with a normal, focusable main window.
             // (Can switch to a menu-bar-only accessory app later for the Wispr look.)
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Regular);
 
-            build_overlay(app)?;
-            let hub = build_hub(app)?;
-            let _ = hub.show();
-            let _ = hub.set_focus();
-            // Closing the Hub via the X button should hide it (dictation keeps
-            // running from the tray), not destroy the window — otherwise "Open
-            // WhimprFlow" in the tray has nothing left to show. macOS already
-            // keeps the app (and its Dock icon) alive on window close, so this
-            // matters most on Windows/Linux, but is harmless everywhere.
-            hub.on_window_event({
-                let app_handle = app.handle().clone();
-                move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        if let Some(w) = app_handle.get_webview_window(HUB_LABEL) {
-                            let _ = w.hide();
-                        }
-                    }
+            // Sign in with publik comes first: the gate window is the only window
+            // until the person is signed in (publik::ensure_signed_in, on its own
+            // thread). It also starts the usage counts (`app_opened` now,
+            // `active_session` every 30 minutes; off with DO_NOT_TRACK=1; see the
+            // README, "Usage counts"). Then start_app builds the app's own windows.
+            publik::adopt_keychain_key();
+            publik_gate::run(app.handle().clone(), |handle, gate| {
+                if let Err(e) = start_app(handle, gate) {
+                    eprintln!("[whimpr] could not start: {e}");
+                    handle.exit(1);
                 }
             });
-
-            // Wire the Fn key to the pill via the real state machine.
-            hotkey::install(app.handle().clone());
-
-            // Register the customizable hands-free hotkey (default Cmd+Shift+Space).
-            apply_hands_free_shortcut(app.handle());
-
-            // Keep the permission rows honest without the Hub having to be awake
-            // to ask. This is what makes the setup screen's promise ("turns green
-            // the moment macOS applies it — no relaunch needed") actually true:
-            // the Hub's own timer stops within seconds of its window going away,
-            // and the reader is granting from System Settings precisely then.
-            permissions::watch(app.handle().clone());
-
-            let open = MenuItem::with_id(app, "open", "Open WhimprFlow", true, None::<&str>)?;
-            let sep = PredefinedMenuItem::separator(app)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit WhimprFlow", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &sep, &quit])?;
-
-            let mut tray = TrayIconBuilder::new()
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "open" => show_hub(app),
-                    "quit" => app.exit(0),
-                    _ => {}
-                });
-            if let Some(icon) = app.default_window_icon().cloned() {
-                tray = tray.icon(icon);
-            }
-            tray.build(app)?;
-
             Ok(())
         })
         .run(tauri::generate_context!())

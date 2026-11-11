@@ -5299,7 +5299,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "whimpr-asr"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "hound",
@@ -5309,7 +5309,7 @@ dependencies = [
 
 [[package]]
 name = "whimpr-audio"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "cpal",
@@ -5317,7 +5317,7 @@ dependencies = [
 
 [[package]]
 name = "whimpr-cleanup"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "hound",
@@ -5330,7 +5330,7 @@ dependencies = [
 
 [[package]]
 name = "whimpr-core"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "serde",
@@ -5343,7 +5343,7 @@ dependencies = [
 
 [[package]]
 name = "whimpr-ipc"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "serde",
  "serde_json",
@@ -5352,7 +5352,7 @@ dependencies = [
 
 [[package]]
 name = "whimpr-llm-worker"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "llama-cpp-2",
@@ -5362,11 +5362,11 @@ dependencies = [
 
 [[package]]
 name = "whimpr-sidecar"
-version = "0.2.6"
+version = "0.2.7"
 
 [[package]]
 name = "whimpr-tauri"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "anyhow",
  "arboard",
@@ -5388,6 +5388,7 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-single-instance",
  "tracing",
+ "uuid",
  "whimpr-asr",
  "whimpr-audio",
  "whimpr-cleanup",

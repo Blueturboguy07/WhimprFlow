@@ -42,7 +42,7 @@ fn support_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(home).join(".local/share/WhimprFlow")
 }
 
-fn settings_path() -> std::path::PathBuf {
+pub fn settings_path() -> std::path::PathBuf {
     support_dir().join("settings.json")
 }
 fn dict_path() -> std::path::PathBuf {
