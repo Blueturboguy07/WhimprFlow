@@ -14,8 +14,10 @@ on:
         description: "The dmg to prove"
         required: true
 
+# contents: write, because the repo token sees a DRAFT release only with push-level
+# access. The job only downloads one file; it never edits a release.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   check:
