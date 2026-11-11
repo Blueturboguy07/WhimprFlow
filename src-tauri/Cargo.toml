@@ -37,6 +37,8 @@ tauri-plugin-global-shortcut = "2"
 # cleanup crate already compiles, and SHA-256 to check the file before use.
 reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }
 sha2 = "0.10"
+# publik.rs: the install ID and the usage-count ID are UUID v4.
+uuid = { version = "1", features = ["v4"] }
 
 # Only Windows/Linux need this: relaunching the exe otherwise spawns a second,
 # independent process (duplicate taskbar entry). macOS's Dock re-activates the

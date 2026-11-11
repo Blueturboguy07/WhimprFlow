@@ -215,6 +215,43 @@ if (-not $exeItem) { Fail "no app .exe in $InstallDir"; exit 1 }
 $script:Exe = $exeItem.FullName
 Pass "installed $($script:Exe)"
 
+# The sign-in gate: WhimprFlow opens with "Sign in with publik" and waits for GET /wallet to
+# say "claimed". This runner has no publik account, so a fake publik answers on 127.0.0.1, and
+# a fake signed-in credential (own key chosen) is written first. No real key or token is involved.
+$FakePort = 47831
+$script:FakePublik = Start-Job -ArgumentList $FakePort -ScriptBlock {
+  param($p)
+  $l = New-Object System.Net.HttpListener
+  $l.Prefixes.Add("http://127.0.0.1:$p/")
+  $l.Start()
+  while ($true) {
+    $c = $l.GetContext()
+    $path = $c.Request.Url.AbsolutePath
+    $body = ""
+    if ($path -eq "/api/v1/wallet") {
+      $c.Response.StatusCode = 200
+      $body = '{"claim_state":"claimed","balance_micros":0,"plan":{"kind":"plan","label":"CI plan"},"account":{"handle":"ci"},"top_up_url":"https://publikhq.com/wallet"}'
+    } elseif ($path -eq "/api/v1/installs") {
+      $c.Response.StatusCode = 201
+      $body = '{"key":"pk_ci_fake","base_url":"http://127.0.0.1:' + $p + '/api/v1","install_id":"00000000-0000-4000-8000-000000000000","claim_url":"https://publikhq.com/claim/CI"}'
+    } else {
+      $c.Response.StatusCode = 204
+    }
+    if ($body) {
+      $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+      $c.Response.ContentType = "application/json"
+      $c.Response.ContentLength64 = $bytes.Length
+      $c.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+    }
+    $c.Response.Close()
+  }
+}
+$PublikApps = Join-Path $env:LOCALAPPDATA 'publik\apps'
+New-Item -ItemType Directory -Force $PublikApps | Out-Null
+'{"key":"pk_ci_fake","base_url":"http://127.0.0.1:' + $FakePort + '/api/v1","install_id":"00000000-0000-4000-8000-000000000000","claim_url":"https://publikhq.com/claim/CI","choice":"own_key"}' | Set-Content (Join-Path $PublikApps 'whimprflow.json') -Encoding ASCII
+$env:PUBLIK_ORIGIN = "http://127.0.0.1:$FakePort"
+Pass "fake publik on port $FakePort answers the sign-in gate (signed in, own key chosen)"
+
 $Bundled = Join-Path $InstallDir "models\$ModelFile"
 $UserModels = Join-Path $env:APPDATA 'WhimprFlow\models'
 if (Test-Path $UserModels) { Remove-Item -Recurse -Force $UserModels }
@@ -339,6 +376,11 @@ Get-Content (Join-Path $OutDir 'bundled.err.log') -ErrorAction SilentlyContinue 
 Write-Host ""
 Write-Host "--- download.err.log ---"
 Get-Content (Join-Path $OutDir 'download.err.log') -ErrorAction SilentlyContinue | Select-Object -First 40
+
+if ($script:FakePublik) {
+  Stop-Job $script:FakePublik -ErrorAction SilentlyContinue
+  Remove-Job $script:FakePublik -Force -ErrorAction SilentlyContinue
+}
 
 Write-Host ""
 if ($script:failures -eq 0) { Write-Host "ALL CHECKS PASSED"; exit 0 }

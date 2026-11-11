@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""CI check for the publik usage counts (telemetry v1) in a built WhimprFlow.
+"""CI check for the publik usage counts in a built WhimprFlow.
 
-It starts the app two times against a local listener, never against publikhq.com:
-  1. with DO_NOT_TRACK=1: no request arrives and no telemetry.json is made;
-  2. with the defaults: exactly one correct `app_opened` arrives.
+It starts the app two times against a fake publik on 127.0.0.1, never against publikhq.com.
+The fake answers GET /api/v1/wallet as a signed-in account with a plan and POST /api/v1/installs
+with a fake key, so the sign-in gate lets the app through on a runner with no publik account.
+A fake credential file (own key chosen) is written first and removed after, unless one was there.
+  1. with DO_NOT_TRACK=1: no usage event arrives and no telemetry.json is made;
+  2. with the defaults: exactly one correct `app_opened` arrives, with the install key on it.
 The app must stay up both times. Standard library only.
 
 Usage: python3 .github/scripts/publik-telemetry-smoke.py <app executable> [result.json]
@@ -16,6 +19,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -26,27 +30,53 @@ OS_NAME = {"darwin": "macos", "win32": "windows"}.get(sys.platform, "linux")
 ALLOWED = {"v", "app", "install_id", "event", "app_version", "os", "arch"}
 UUID4 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 UP_SECONDS = 12  # how long the app must stay up in each run
+FAKE_KEY = "pk_ci_smoke"  # a fake, never a real publik key
 
 seen = []
 lock = threading.Lock()
+origin = {"url": ""}
 
 
 class Handler(BaseHTTPRequestHandler):
+    """The fake publik: a signed-in account with a plan, and the usage-count endpoint."""
+
+    def _answer(self, code, body):
+        data = json.dumps(body).encode("utf-8") if body is not None else b""
+        self.send_response(code)
+        if data:
+            self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if data:
+            self.wfile.write(data)
+
     def _handle(self):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
-        with lock:
-            seen.append({
-                "method": self.command,
-                "path": self.path,
-                "content_type": self.headers.get("Content-Type"),
-                "origin": self.headers.get("Origin"),
-                "has_authorization": self.headers.get("Authorization") is not None,  # the value is never kept
-                "body": body,
+        path = self.path.split("?")[0]
+        if path == "/api/v1/wallet":
+            return self._answer(200, {
+                "claim_state": "claimed", "balance_micros": 0,
+                "plan": {"kind": "plan", "label": "CI plan"}, "account": {"handle": "ci"},
+                "top_up_url": "https://publikhq.com/wallet",
             })
-        self.send_response(204)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
+        if path == "/api/v1/installs":
+            return self._answer(201, {
+                "key": FAKE_KEY, "base_url": origin["url"] + "/api/v1",
+                "install_id": str(uuid.uuid4()), "claim_url": "https://publikhq.com/claim/CI",
+            })
+        if path == "/api/v1/telemetry":
+            with lock:
+                seen.append({
+                    "method": self.command,
+                    "path": self.path,
+                    "content_type": self.headers.get("Content-Type"),
+                    "origin": self.headers.get("Origin"),
+                    "has_authorization": self.headers.get("Authorization") is not None,  # the value is never kept
+                    "body": body,
+                })
+            return self._answer(204, None)
+        self._answer(404, {"error": {"message": "the fake publik has no such route"}})
 
     do_POST = do_GET = do_PUT = do_OPTIONS = do_HEAD = _handle
 
@@ -76,13 +106,13 @@ def stop(proc):
         proc.wait(10)
 
 
-def run(exe, url, extra_env):
-    """Runs the app for UP_SECONDS. Returns (stayed up, requests, log text)."""
+def run(exe, base, extra_env):
+    """Runs the app for UP_SECONDS. Returns (stayed up, usage-count requests, log text)."""
     with lock:
         del seen[:]
-    drop = ("DO_NOT_TRACK", "PUBLIK_TELEMETRY", "PUBLIK_API_KEY", "PUBLIK_TELEMETRY_INTERVAL_SECONDS")
+    drop = ("DO_NOT_TRACK", "PUBLIK_TELEMETRY", "PUBLIK_API_KEY", "PUBLIK_TELEMETRY_INTERVAL_SECONDS", "PUBLIK_TELEMETRY_URL", "PUBLIK_ORIGIN")
     env = {name: value for name, value in os.environ.items() if name not in drop}
-    env.update({"PUBLIK_TELEMETRY_URL": url, "PUBLIK_TELEMETRY_DEBUG": "1"})
+    env.update({"PUBLIK_ORIGIN": base, "PUBLIK_TELEMETRY_DEBUG": "1"})
     env.update(extra_env)
     with tempfile.TemporaryFile() as log:
         proc = subprocess.Popen([exe], env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
@@ -108,8 +138,8 @@ def problems_of(request):
         out.append("Content-Type is %r" % request["content_type"])
     if request["origin"] is not None:
         out.append("an Origin header came with it (the server drops such an event)")
-    if request["has_authorization"]:
-        out.append("an Authorization header came with it, and this computer has no publik key")
+    if not request["has_authorization"]:
+        out.append("no Authorization header came with it: the install key must go with the event")
     try:
         body = json.loads(request["body"])
     except ValueError:
@@ -135,44 +165,66 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    url = "http://127.0.0.1:%d/api/v1/telemetry" % server.server_address[1]
+    base = "http://127.0.0.1:%d" % server.server_address[1]
+    origin["url"] = base
     id_file = publik_dir() / "telemetry.json"
     had_id_file = id_file.exists()
+    # The sign-in gate reads this computer's credential. A fake signed-in one (own key chosen)
+    # takes the app past the gate without a mint; it goes when the check is done.
+    cred_file = publik_dir() / "apps" / ("%s.json" % SLUG)
+    had_cred = cred_file.exists()
+    if not had_cred:
+        cred_file.parent.mkdir(parents=True, exist_ok=True)
+        cred_file.write_text(json.dumps({
+            "key": FAKE_KEY, "base_url": base + "/api/v1", "install_id": str(uuid.uuid4()),
+            "claim_url": "https://publikhq.com/claim/CI", "choice": "own_key",
+        }), encoding="utf-8")
     failures = []
-    print("app: %s\nexpected: app=%s app_version=%s os=%s\nlistener: %s" % (exe, SLUG, VERSION, OS_NAME, url))
+    print("app: %s\nexpected: app=%s app_version=%s os=%s\nfake publik: %s\ncredential file: %s (%s)" % (
+        exe, SLUG, VERSION, OS_NAME, base, cred_file, "was there" if had_cred else "fake, written for this check"))
 
-    print("\n1. DO_NOT_TRACK=1")
-    up, got, text = run(exe, url, {"DO_NOT_TRACK": "1"})
-    off_line = "publik-telemetry: app_opened -> off (opt-out)" in text
-    if not up:
-        failures.append("opt-out run: the app did not stay up for %d s" % UP_SECONDS)
-    if got:
-        failures.append("opt-out run: %d request(s) arrived" % len(got))
-    if not had_id_file and id_file.exists():
-        failures.append("opt-out run: telemetry.json was made")
-    print("   stayed up: %s, requests: %d, telemetry.json made: %s, debug line 'off (opt-out)': %s" % (up, len(got), (not had_id_file) and id_file.exists(), off_line))
-    opt_out = {"stayed_up": up, "requests": len(got), "debug_line_off": off_line}
-
-    print("\n2. defaults")
-    up, got, text = run(exe, url, {})
-    if not up:
-        failures.append("normal run: the app did not stay up for %d s" % UP_SECONDS)
-    if len(got) != 1:
-        failures.append("normal run: %d request(s) arrived, expected exactly 1" % len(got))
-    for request in got:
-        failures.extend("normal run: " + problem for problem in problems_of(request))
-        print("   request: %s %s %s" % (request["method"], request["path"], request["body"]))
-    debug_lines = [line.strip() for line in text.splitlines() if "publik-telemetry:" in line]
-    print("   stayed up: %s, requests: %d, debug lines: %s" % (up, len(got), debug_lines))
     try:
-        saved = json.loads(id_file.read_text(encoding="utf-8")).get("install_id")
-    except (OSError, ValueError):
-        saved = None
-    if got and saved != json.loads(got[0]["body"]).get("install_id"):
-        failures.append("normal run: the install_id sent is not the one in telemetry.json")
-    if failures:
-        print("\n--- app output (first 40 lines) ---")
-        print("\n".join(text.splitlines()[:40]))
+        print("\n1. DO_NOT_TRACK=1")
+        up, got, text = run(exe, base, {"DO_NOT_TRACK": "1"})
+        off_line = "publik-telemetry: app_opened -> off (opt-out)" in text
+        if not up:
+            failures.append("opt-out run: the app did not stay up for %d s" % UP_SECONDS)
+        if got:
+            failures.append("opt-out run: %d usage-count request(s) arrived" % len(got))
+        if not had_id_file and id_file.exists():
+            failures.append("opt-out run: telemetry.json was made")
+        print("   stayed up: %s, requests: %d, telemetry.json made: %s, debug line 'off (opt-out)': %s" % (up, len(got), (not had_id_file) and id_file.exists(), off_line))
+        opt_out = {"stayed_up": up, "requests": len(got), "debug_line_off": off_line}
+        if not up:
+            print("--- app output (first 40 lines) ---")
+            print("\n".join(text.splitlines()[:40]))
+
+        print("\n2. defaults")
+        up, got, text = run(exe, base, {})
+        if not up:
+            failures.append("normal run: the app did not stay up for %d s" % UP_SECONDS)
+        if len(got) != 1:
+            failures.append("normal run: %d usage-count request(s) arrived, expected exactly 1" % len(got))
+        for request in got:
+            failures.extend("normal run: " + problem for problem in problems_of(request))
+            print("   request: %s %s %s (Authorization present: %s)" % (request["method"], request["path"], request["body"], request["has_authorization"]))
+        debug_lines = [line.strip() for line in text.splitlines() if "publik-telemetry:" in line]
+        print("   stayed up: %s, requests: %d, debug lines: %s" % (up, len(got), debug_lines))
+        try:
+            saved = json.loads(id_file.read_text(encoding="utf-8")).get("install_id")
+        except (OSError, ValueError):
+            saved = None
+        if got and saved != json.loads(got[0]["body"]).get("install_id"):
+            failures.append("normal run: the install_id sent is not the one in telemetry.json")
+        if failures:
+            print("\n--- app output (first 40 lines) ---")
+            print("\n".join(text.splitlines()[:40]))
+    finally:
+        if not had_cred:
+            try:
+                cred_file.unlink()
+            except OSError:
+                pass
 
     if result_file:
         Path(result_file).write_text(json.dumps({

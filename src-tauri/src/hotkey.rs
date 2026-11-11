@@ -126,7 +126,7 @@ mod imp {
         let home = std::env::var("HOME").unwrap_or_default();
         PathBuf::from(home).join("Library/Application Support/WhimprFlow")
     }
-    fn settings_path() -> PathBuf {
+    pub fn settings_path() -> PathBuf {
         support_dir().join("settings.json")
     }
     fn dict_path() -> PathBuf {
@@ -299,14 +299,10 @@ mod imp {
         });
         let anthropic = read_anthropic_key()
             .map(|k| whimpr_cleanup::AnthropicProvider::new(k, settings.anthropic_model.clone()));
-        // publik: its own keychain account + the base URL / alias the
-        // provisioning response handed back (never the user's OpenAI slot).
+        // publik: this computer's key and base URL from the credential file the
+        // sign-in gate wrote (never the user's OpenAI slot).
         let publik = crate::publik::read_key().map(|k| {
-            whimpr_cleanup::PublikProvider::new(
-                k,
-                &whimpr_cleanup::publik::resolve_base_url(&settings.publik_base_url),
-                &settings.publik_model,
-            )
+            whimpr_cleanup::PublikProvider::new(k, &crate::publik::base_url(), &settings.publik_model)
         });
         eprintln!(
             "[whimpr] cleanup providers: openai={}, anthropic={}, publik={}",
@@ -891,7 +887,7 @@ mod imp {
 pub use imp::{
     cancel_dictation, current_settings, dictionary_add, dictionary_entries, dictionary_learn,
     dictionary_remove, history, install, rebuild_providers, stats_summary, stop_dictation,
-    trigger_hands_free, update_settings,
+    settings_path, trigger_hands_free, update_settings,
 };
 
 // Windows uses the real (but unverified) platform layer in `crate::win`.
@@ -899,7 +895,7 @@ pub use imp::{
 pub use crate::win::{
     cancel_dictation, current_settings, dictionary_add, dictionary_entries, dictionary_learn,
     dictionary_remove, history, install, rebuild_providers, stats_summary, stop_dictation,
-    trigger_hands_free, update_settings,
+    settings_path, trigger_hands_free, update_settings,
 };
 
 // Linux: real platform layer (rdev hotkey + xdotool/ydotool paste + full pipeline).
@@ -907,7 +903,7 @@ pub use crate::win::{
 pub use crate::linux::{
     cancel_dictation, current_settings, dictionary_add, dictionary_entries, dictionary_learn,
     dictionary_remove, history, install, rebuild_providers, stats_summary, stop_dictation,
-    trigger_hands_free, update_settings,
+    settings_path, trigger_hands_free, update_settings,
 };
 
 // Other platforms (none currently shipped): inert stubs so the crate still builds.
@@ -919,6 +915,9 @@ mod other {
     }
     pub fn update_settings(_new: whimpr_core::Settings) {}
     pub fn rebuild_providers() {}
+    pub fn settings_path() -> std::path::PathBuf {
+        std::path::PathBuf::new()
+    }
     pub fn stats_summary(tz_offset_minutes: i32) -> whimpr_core::StatsSummary {
         whimpr_core::StatsStore::default().summary(tz_offset_minutes, 0)
     }
@@ -939,5 +938,5 @@ mod other {
 pub use other::{
     cancel_dictation, current_settings, dictionary_add, dictionary_entries, dictionary_learn,
     dictionary_remove, history, install, rebuild_providers, stats_summary, stop_dictation,
-    trigger_hands_free, update_settings,
+    settings_path, trigger_hands_free, update_settings,
 };
