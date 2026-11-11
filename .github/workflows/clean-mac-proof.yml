@@ -1,0 +1,70 @@
+# GUI proof of one DRAFT release file on a clean GitHub macOS runner, with the
+# scripts of Blueturboguy07/publik-clean-mac-check, unchanged. A draft's files
+# are not public, so this job downloads the file with the repo's own token and
+# hands check.sh a file:// URL. It changes nothing on the release.
+name: clean Mac proof (draft)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (a draft is found by its tag name)"
+        required: true
+      file:
+        description: "The dmg to prove"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Blueturboguy07/publik-clean-mac-check
+          ref: main
+      - name: Download the draft file with the repo token
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          FILE: ${{ inputs.file }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dl"
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" --pattern "$FILE" --dir "$RUNNER_TEMP/dl"
+          ls -l "$RUNNER_TEMP/dl"
+          shasum -a 256 "$RUNNER_TEMP/dl/$FILE"
+          python3 - "$FILE" "$RUNNER_TEMP/dl/$FILE" > apps-proof.json <<'PY'
+          import json, sys
+          print(json.dumps([{"slug": "whimprflow", "file": sys.argv[1], "url": "file://" + sys.argv[2], "tag": "draft", "runner": "arm64"}]))
+          PY
+          cat apps-proof.json
+      - name: Block publikhq.com, so a test can not touch production
+        run: |
+          echo "127.0.0.1 publikhq.com www.publikhq.com" | sudo tee -a /etc/hosts
+          sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder || true
+      - name: Gatekeeper is on (negative control)
+        run: bash control.sh
+      - name: Download, install and open the file (check.sh of publik-clean-mac-check)
+        run: bash check.sh apps-proof.json arm64 whimprflow
+      - name: Result
+        run: |
+          cat results/results.jsonl
+          python3 - <<'PY'
+          import json
+          r = [json.loads(l) for l in open("results/results.jsonl")][-1]
+          want = {"downloaded": True, "integrity": "true", "staple_file": "true", "gatekeeper_file": "true", "installed": True,
+                  "staple_app": True, "gatekeeper_app": True, "opened": True, "still_up": True, "damaged_message": False}
+          bad = {k: r.get(k) for k, v in want.items() if r.get(k) != v}
+          print("gatekeeper_source:", r.get("gatekeeper_source"), "| version:", r.get("version"), "| event:", r.get("event_app"), r.get("event_version"), "| signed_in_seen:", r.get("signed_in_seen"))
+          print("PROOF: PASS" if not bad else f"PROOF: FAIL {bad}")
+          raise SystemExit(0 if not bad else 1)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clean-mac-proof
+          path: results
