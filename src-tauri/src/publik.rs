@@ -1,12 +1,14 @@
 //! publik: Sign in with publik, usage counting, and publik API as one cleanup engine.
 //!
 //! The first part of this file is the publik module from
-//! https://publikhq.com/sdk/publik.rs.md. WhimprFlow changes four lines of it:
+//! https://publikhq.com/sdk/publik.rs.md. WhimprFlow changes five lines of it:
 //! 1. `APP_TOKEN` is compiled in from `PUBLIK_APP_TOKEN` at build time (scripts/build-macos.sh,
 //!    the CI secret), as every WhimprFlow build before it. There is no token file in the repo.
 //! 2. `APP_VERSION` is the Cargo package version.
 //! 3. `curl` runs without a console window on Windows.
 //! 4. The origin is https://publikhq.com.
+//! 5. `start_telemetry` makes the usage-count ID file (`telemetry.json`) on the first event that
+//!    goes out, so an opt-out run (`DO_NOT_TRACK=1`) makes no file, as the README promises.
 //!
 //! The second part ("WhimprFlow") is what the app adds on top: the status card the Hub renders,
 //! the 402 and revoked-key handling the dictation pipeline calls, and the link between the
@@ -324,9 +326,16 @@ pub fn start_telemetry() {
     let s: u64 = std::env::var("PUBLIK_TELEMETRY_INTERVAL_SECONDS").ok().and_then(|v| v.parse().ok()).unwrap_or(0); // tests only
     let interval = Duration::from_secs(if (1..=86_400).contains(&s) { s } else { 1_800 });
     std::thread::spawn(move || {
-        let id = telemetry_install_id();
-        send_event("app_opened", &id);
-        loop { std::thread::sleep(interval); send_event("active_session", &id); }
+        let mut id = String::new(); // made on the first event that goes out: an opt-out run makes no ID file
+        let mut event = "app_opened";
+        loop {
+            if !usage_off() && id.is_empty() {
+                id = telemetry_install_id();
+            }
+            send_event(event, &id);
+            std::thread::sleep(interval);
+            event = "active_session";
+        }
     });
 }
 
