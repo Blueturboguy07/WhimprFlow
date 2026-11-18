@@ -115,7 +115,7 @@ The public key is compiled into each copy, so a new key reaches users only throu
 
 ## Test
 
-`updater-proof.yml` (workflow_dispatch, or a push to `feat/updater` or `updater/**`) builds
+`updater-proof.yml` (workflow_dispatch) builds
 0.0.1 and 0.0.2, installs 0.0.1 on `macos-latest` and `windows-latest`, and checks that 0.0.1
 refuses three bad feeds and then updates to 0.0.2. On macOS it also checks that the bundle id,
 the signing certificate and the designated requirement do not change. Then it starts 0.0.1 once
