@@ -45,7 +45,7 @@ docs/                spec, architecture notes, research
 
 ## Releasing (macOS)
 
-A release build needs two things in the environment: a Developer ID identity (see `scripts/build-macos.sh`) and `PUBLIK_APP_TOKEN` — the app token that lets a downloaded copy mint this computer's publik key when the user signs in. The script refuses a release without either. The token must be exactly `pat_whimprflow_` plus 32 of `[a-z0-9]` (47 characters); the script and the compiler both refuse any other shape, because the 0.2.3 Mac build shipped a token with 12 extra characters and every publik link failed. To read the token off an earlier build, match the exact length: `strings <binary> | grep -oE 'pat_whimprflow_[a-z0-9]{32}' | head -1`. The token is read at compile time and never printed; `scripts/verify-macos.sh` checks the module is compiled in without touching the value. CI does the same from the `PUBLIK_APP_TOKEN` repository secret on a `v*` tag (`.github/workflows/release.yml`). A dev build (`--skip-notarize`, or `./dev.sh`) may omit the token — it then cannot sign in a new computer, and the sign-in window says so; a computer that is already signed in keeps working, as do Local / your own key.
+A release build needs two things in the environment: a Developer ID identity (see `scripts/build-macos.sh`) and `PUBLIK_APP_TOKEN` — the app token that lets a downloaded copy mint this computer's publik key when the user signs in. The script refuses a release without either. The token must be exactly `pat_whimprflow_` plus 32 of `[a-z0-9]` (47 characters); the script and the compiler both refuse any other shape, because the 0.2.3 Mac build shipped a token with 12 extra characters and every publik link failed. To read the token off an earlier build, match the exact length: `strings <binary> | grep -oE 'pat_whimprflow_[a-z0-9]{32}' | head -1`. The token is read at compile time and never printed; `scripts/verify-macos.sh` checks the module is compiled in without touching the value. CI does the same from the `PUBLIK_APP_TOKEN` repository secret on a `v*` tag (`.github/workflows/release.yml`). A dev build (`--skip-notarize`, or `./dev.sh`) may omit the token — it then cannot sign in a new computer, and the sign-in window says so; a computer that is already signed in keeps working, as do Local / your own key. A notarized build also packs the update bundle from the stapled app, which needs the publik update key; the release steps are in [docs/updates.md](docs/updates.md).
 
 ## Build (macOS)
 
@@ -143,6 +143,10 @@ why it looked like nothing was happening at all). If you still hit this:
 - Still stuck? Run the app from a terminal (`./dev.sh` on macOS, or the built
   `.exe` from PowerShell on Windows) and hold the key once — every failure
   path also logs a `[whimpr]`-prefixed line explaining what happened.
+
+## Updates
+
+WhimprFlow checks for a new version 10 s after launch and once a day, from `https://publikhq.com/api/updates/whimprflow/latest.json`. "Check for Updates…" in the tray menu checks at once. It installs only a package signed with the publik update key, and it asks before it restarts. `PUBLIK_NO_AUTO_UPDATE=1` turns off the automatic checks. Release steps, the key and the proof: **[docs/updates.md](docs/updates.md)**.
 
 ## Usage counts
 
