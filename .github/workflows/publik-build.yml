@@ -8,6 +8,11 @@
 #
 # Both jobs start the built app against a local listener and fail when the
 # usage counts are wrong (.github/scripts/publik-telemetry-smoke.py).
+#
+# Updates (docs/updates.md): the Windows installer is built with its updater
+# signature (<installer>.sig, the TAURI_SIGNING_PRIVATE_KEY secret). The macOS
+# app gets no update bundle here: an update bundle of this unsigned app must never
+# ship. The release Mac packs it from the stapled app (scripts/updater-pack-macos.sh).
 
 name: publik build
 
@@ -18,6 +23,10 @@ on:
 
 permissions:
   contents: read
+
+# No automatic update check while the checks start the app (src-tauri/src/updates.rs).
+env:
+  PUBLIK_NO_AUTO_UPDATE: "1"
 
 jobs:
   macos:
@@ -182,21 +191,39 @@ jobs:
         shell: bash
         run: scripts/fetch-speech-model.sh
 
+      # With the update key, tauri build also writes <installer>.sig (tauri.updater.conf.json).
       - name: Build the installer
         shell: pwsh
         env:
           PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           if ($env:PUBLIK_APP_TOKEN -notmatch '^pat_whimprflow_[a-z0-9]{32}$') { Write-Host "::error::PUBLIK_APP_TOKEN is missing or has the wrong shape (value not shown)."; exit 1 }
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { Write-Host "::error::The TAURI_SIGNING_PRIVATE_KEY secret is not set. The installer would have no updater signature."; exit 1 }
           Set-Location src-tauri
-          ..\ui\node_modules\.bin\tauri.CMD build --config tauri.bundled-model.conf.json
+          ..\ui\node_modules\.bin\tauri.CMD build --config tauri.bundled-model.conf.json --config tauri.updater.conf.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # The signature must verify against the pubkey in tauri.conf.json and name this version.
+      - name: Check the updater signature
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE="$(ls target/release/bundle/nsis/*-setup.exe)"
+          [ -s "$EXE.sig" ] || { echo "::error::no updater signature next to $EXE"; exit 1; }
+          VERSION="$(node -p 'require("./src-tauri/tauri.conf.json").version')"
+          node scripts/updater-latest-json.mjs --version "$VERSION" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/" \
+            --platform "windows-x86_64=$EXE" --out "$RUNNER_TEMP/latest-check.json"
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
           name: whimprflow-windows-installer
-          path: target/release/bundle/nsis/*-setup.exe
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/*-setup.exe.sig
           compression-level: 0
           retention-days: 7
           if-no-files-found: error

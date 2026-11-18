@@ -4,7 +4,10 @@
 # the bundled model loads, and with it removed the Hub's "Download speech
 # model" button fetches, verifies and loads one with no relaunch.
 #
-# On a published release, the installer is attached to that release.
+# With the TAURI_SIGNING_PRIVATE_KEY secret, the build also writes the installer's
+# updater signature (<installer>.sig, tauri.updater.conf.json; docs/updates.md) and
+# checks it. On a published release, the installer and its .sig are attached to that
+# release, and latest.json is written when the Mac update bundle is there too.
 
 name: windows
 
@@ -26,6 +29,8 @@ permissions:
 # publik telemetry is off on build machines: a test run is not a user.
 env:
   DO_NOT_TRACK: "1"
+  # No automatic update check while the checks drive the app (src-tauri/src/updates.rs).
+  PUBLIK_NO_AUTO_UPDATE: "1"
 
 jobs:
   # A release that already holds a Windows installer keeps it. Such a release
@@ -101,14 +106,39 @@ jobs:
         shell: bash
         run: scripts/fetch-speech-model.sh
 
+      # With the update key, tauri build also signs the installer for the updater
+      # (tauri.updater.conf.json). A release needs that signature; a pull request from a
+      # fork has no secrets and builds without it.
       - name: Build the installer
         shell: pwsh
         env:
           PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
         run: |
+          $updater = @()
+          if ($env:TAURI_SIGNING_PRIVATE_KEY) { $updater = @("--config", "tauri.updater.conf.json") }
+          elseif ($env:RELEASE_TAG) { Write-Host "::error::The TAURI_SIGNING_PRIVATE_KEY secret is not set. A release installer needs its updater signature."; exit 1 }
+          else { Write-Host "::warning::No update key: this installer has no updater signature." }
           Set-Location src-tauri
-          ..\ui\node_modules\.bin\tauri.CMD build --config tauri.bundled-model.conf.json
+          ..\ui\node_modules\.bin\tauri.CMD build --config tauri.bundled-model.conf.json @updater
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      # The signature must verify against the pubkey in tauri.conf.json and name this version.
+      - name: Check the updater signature
+        shell: bash
+        env:
+          HAS_UPDATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$HAS_UPDATE_KEY" != true ]; then echo "No update key: no signature to check."; exit 0; fi
+          EXE="$(ls target/release/bundle/nsis/*-setup.exe)"
+          [ -s "$EXE.sig" ] || { echo "::error::no updater signature next to $EXE"; exit 1; }
+          VERSION="$(node -p 'require("./src-tauri/tauri.conf.json").version')"
+          node scripts/updater-latest-json.mjs --version "$VERSION" \
+            --base-url "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/" \
+            --platform "windows-x86_64=$EXE" --out "$RUNNER_TEMP/latest-check.json"
 
       # DO_NOT_TRACK: the app sends publik usage counts, and a CI runner is not a user.
       - name: Install and verify
@@ -128,7 +158,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: whimprflow-windows-installer
-          path: target/release/bundle/nsis/*-setup.exe
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/*-setup.exe.sig
 
       - name: Attach the installer to the release
         if: github.event_name == 'release' || inputs.release_tag != ''
@@ -137,4 +169,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
         # No --clobber: an installer that is already on the release is never replaced.
-        run: gh release upload "$TAG" target/release/bundle/nsis/*-setup.exe
+        run: gh release upload "$TAG" target/release/bundle/nsis/*-setup.exe target/release/bundle/nsis/*-setup.exe.sig
+
+      # latest.json, when the Mac update bundle is on the release too (docs/updates.md).
+      - name: Write the update feed
+        if: github.event_name == 'release' || inputs.release_tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: scripts/updater-release-feed.sh "$TAG" --if-complete

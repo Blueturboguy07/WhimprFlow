@@ -4,5 +4,7 @@ fn main() {
     // so without this line a cached object keeps whatever value it had — the
     // classic "the release shipped with no token" failure.
     println!("cargo:rerun-if-env-changed=PUBLIK_APP_TOKEN");
+    // Test builds point the updater at a test feed (src/updates.rs, option_env!).
+    println!("cargo:rerun-if-env-changed=PUBLIK_UPDATE_ENDPOINT");
     tauri_build::build();
 }

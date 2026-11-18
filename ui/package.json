@@ -10,12 +10,12 @@
     "test": "node --test src/hub/*.test.ts"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.4.0",
+    "@tauri-apps/api": "^2.12.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.4.0",
+    "@tauri-apps/cli": "^2.12.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",

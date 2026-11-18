@@ -1,0 +1,319 @@
+# Proves the signed self-updater end to end on clean GitHub runners. Never run on a desk Mac.
+#
+# Builds WhimprFlow N (0.0.1) and N+1 (0.0.2) with the release commands, compiled to read their
+# update feed from http://127.0.0.1:$FEED_PORT/latest.json (PUBLIK_UPDATE_ENDPOINT at build time;
+# plain HTTP on loopback needs dangerousInsecureTransportProtocol, set for these test builds only).
+# Then, on macos-latest and windows-latest: install N, serve the feed in the job, and run N's
+# updater self-test (PUBLIK_UPDATE_SELF_TEST, src-tauri/src/updates.rs) against
+#   - a feed whose signature is from another key        -> refused, N stays on disk
+#   - a feed whose package has one byte changed          -> refused, N stays on disk
+#   - a feed that announces a version the signature does not name -> refused, N stays on disk
+#   - the good feed                                      -> N+1 installed, the app on disk reports N+1
+# macOS also checks that the updated app keeps the bundle id, the signing certificate and the
+# designated requirement (what the microphone and Accessibility grants are bound to). The repo
+# has no Developer ID secrets, so both macOS builds are signed in the proof job with one
+# throwaway certificate, with the codesign steps of scripts/build-macos.sh
+# (tests/updater/proof-macos.sh). The self-test opens no window and never starts the microphone.
+# Last, the release feed tool (scripts/updater-release-feed.sh) writes latest.json from the two
+# N+1 packages and the job checks its absolute GitHub URLs.
+# Nothing is published: no release, no tag. Results: the job summaries and the updater-proof-* artifacts.
+name: updater-proof
+
+on:
+  workflow_dispatch:
+  # A workflow_dispatch workflow can be started only once it is on the default branch; the push
+  # trigger lets it run from a branch before that.
+  push:
+    branches: ['feat/updater', 'updater/**']
+    paths: ['src-tauri/**', 'crates/**', 'Cargo.lock', 'ui/package.json', 'ui/pnpm-lock.yaml', 'scripts/updater-*', 'tests/updater/**', '.github/workflows/updater-proof.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: updater-proof-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DO_NOT_TRACK: '1'
+  PUBLIK_NO_AUTO_UPDATE: '1'
+  FEED_PORT: '47390'
+  N: '0.0.1'
+  N1: '0.0.2'
+
+jobs:
+  build-macos:
+    name: Build macOS ${{ matrix.version }}
+    strategy:
+      matrix:
+        version: ['0.0.1', '0.0.2']
+    # The toolchain of publik-build.yml (the 0.2.5 dmg toolchain): Xcode 26.2, Rust 1.97.1.
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26.2
+        run: |
+          X=/Applications/Xcode_26.2.app
+          [ -d "$X" ] || X="$(ls -d /Applications/Xcode_26*.app | sort -V | head -1)"
+          sudo xcode-select -s "$X/Contents/Developer"
+          sw_vers; xcodebuild -version
+
+      # As in publik-build.yml: whisper.cpp's @available check needs clang's runtime library.
+      - name: Link clang's runtime library
+        run: |
+          RT="$(xcrun clang --print-resource-dir)/lib/darwin/libclang_rt.osx.a"
+          [ -f "$RT" ] || { echo "::error::no libclang_rt.osx.a at $RT"; exit 1; }
+          echo "RUSTFLAGS=-C link-arg=$RT" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.97.1'
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: updater-proof
+          cache-on-failure: true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - name: Install the UI packages
+        run: pnpm --dir ui install --frozen-lockfile
+
+      # Same order as scripts/build-macos.sh: the worker, then `tauri build`.
+      - name: Build the local-LLM worker
+        run: cargo build --release -p whimpr-llm-worker
+
+      # The publik-build.yml command (no updater files: the release packs the update bundle after
+      # Developer ID signing), plus the test version and the loopback feed. No speech model and
+      # no publik app token: the self-test needs neither.
+      - name: Build WhimprFlow.app ${{ matrix.version }}
+        env:
+          PUBLIK_UPDATE_ENDPOINT: http://127.0.0.1:${{ env.FEED_PORT }}/latest.json
+          VERSION: ${{ matrix.version }}
+        run: |
+          printf '{"version":"%s","plugins":{"updater":{"dangerousInsecureTransportProtocol":true}}}' "$VERSION" > "$RUNNER_TEMP/proof.conf.json"
+          cd src-tauri
+          ../ui/node_modules/.bin/tauri build --bundles app --config "$RUNNER_TEMP/proof.conf.json"
+          cd ..
+          APP=target/release/bundle/macos/WhimprFlow.app
+          test ! -e target/release/bundle/macos/WhimprFlow.app.tar.gz || { echo "::error::tauri build made updater files"; exit 1; }
+          cp target/release/whimpr-llm-worker "$APP/Contents/MacOS/whimpr-llm-worker"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")" = "$VERSION"
+          lipo -archs "$APP/Contents/MacOS/whimpr-tauri"
+          grep -q -a -F "127.0.0.1:$FEED_PORT/latest.json" "$APP/Contents/MacOS/whimpr-tauri"
+          mkdir -p dist
+          ditto -c -k --keepParent "$APP" "dist/WhimprFlow-$VERSION.app.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-macos-${{ matrix.version }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  build-windows:
+    name: Build Windows ${{ matrix.version }}
+    strategy:
+      matrix:
+        version: ['0.0.1', '0.0.2']
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # The toolchain of windows.yml.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: updater-proof
+          cache-on-failure: true
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: libclang 18 for bindgen
+        shell: pwsh
+        run: |
+          python -m pip install --quiet libclang==18.1.1
+          $dir = (python -c "import clang, os; print(os.path.dirname(clang.__file__) + r'\native')").Trim()
+          "LIBCLANG_PATH=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install the UI packages
+        run: pnpm --dir ui install --frozen-lockfile
+
+      # The windows.yml command with the update key and tauri.updater.conf.json: tauri build
+      # writes the installer and its .sig. No speech model: the self-test does not need it.
+      - name: Build the installer ${{ matrix.version }}
+        working-directory: src-tauri
+        shell: pwsh
+        env:
+          PUBLIK_UPDATE_ENDPOINT: http://127.0.0.1:${{ env.FEED_PORT }}/latest.json
+          VERSION: ${{ matrix.version }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { Write-Error "The TAURI_SIGNING_PRIVATE_KEY secret is not set."; exit 1 }
+          $cfg = Join-Path $env:RUNNER_TEMP "proof.conf.json"
+          '{"version":"' + $env:VERSION + '","plugins":{"updater":{"dangerousInsecureTransportProtocol":true}}}' | Set-Content $cfg -Encoding ascii
+          & ..\ui\node_modules\.bin\tauri.cmd build --bundles nsis --config tauri.updater.conf.json --config $cfg
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force ..\dist | Out-Null
+          Copy-Item "../target/release/bundle/nsis/WhimprFlow_$($env:VERSION)_x64-setup.exe", "../target/release/bundle/nsis/WhimprFlow_$($env:VERSION)_x64-setup.exe.sig" ..\dist\
+          Get-ChildItem ..\dist | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-windows-${{ matrix.version }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  proof-macos:
+    name: Proof on macos-latest
+    needs: build-macos
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # For the Tauri CLI (tauri signer): the release pack script signs with it.
+      - name: Install the UI packages
+        run: pnpm --dir ui install --frozen-lockfile
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: build-macos-*
+          path: builds
+          merge-multiple: true
+
+      - name: Unpack N and N+1
+        run: |
+          uname -m; sw_vers
+          mkdir -p apps/N apps/N1
+          ditto -x -k "builds/WhimprFlow-$N.app.zip" apps/N
+          ditto -x -k "builds/WhimprFlow-$N1.app.zip" apps/N1
+
+      - name: Prove the updater
+        timeout-minutes: 20
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: bash tests/updater/proof-macos.sh apps/N/WhimprFlow.app apps/N1/WhimprFlow.app out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: updater-proof-macos
+          path: out/
+          retention-days: 30
+
+  proof-windows:
+    name: Proof on windows-latest
+    needs: build-windows
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # For the Tauri CLI (tauri signer), which makes the foreign-key signature.
+      - name: Install the UI packages
+        run: pnpm --dir ui install --frozen-lockfile
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: build-windows-*
+          path: builds
+          merge-multiple: true
+
+      - name: Prove the updater
+        shell: pwsh
+        timeout-minutes: 20
+        run: |
+          [System.Environment]::OSVersion.VersionString
+          $n = (Get-Item "builds/WhimprFlow_$($env:N)_x64-setup.exe").FullName
+          $n1 = (Get-Item "builds/WhimprFlow_$($env:N1)_x64-setup.exe").FullName
+          pwsh -NoProfile -File tests/updater/proof-windows.ps1 -N $n -N1 $n1 -Out out
+          exit $LASTEXITCODE
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: updater-proof-windows
+          path: out/
+          retention-days: 30
+
+  # The release feed tool on the two N+1 packages (the macOS one as the proof job packed it).
+  release-feed:
+    name: Release feed (latest.json)
+    needs: [proof-macos, build-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: updater-proof-macos
+          path: proof-macos
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-windows-${{ env.N1 }}
+          path: files
+
+      - name: Write and check latest.json
+        run: bash tests/updater/release-feed-check.sh proof-macos/release-files files out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: updater-proof-release-feed
+          path: out/
+          retention-days: 30

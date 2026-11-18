@@ -42,6 +42,13 @@
 # fresh install could not dictate. --no-bundled-model skips it for a quick
 # local build; the app then offers its download button instead.
 #
+# The update bundle: a notarized build also writes
+# bundle/updater/WhimprFlow_<version>_<arch>.app.tar.gz and its .sig, packed from the
+# stapled app by scripts/updater-pack-macos.sh (docs/updates.md). `tauri build` makes no
+# updater files here (tauri.conf.json leaves createUpdaterArtifacts off): the app is
+# re-signed below, and an update must carry the final, stapled bytes. The update key
+# comes from TAURI_SIGNING_PRIVATE_KEY(+_PASSWORD) or the "publik-update-key" keychain item.
+#
 # Usage: scripts/build-macos.sh [--target <triple>] [--skip-notarize] [--no-bundled-model]
 set -euo pipefail
 
@@ -192,6 +199,11 @@ if [ "$NOTARIZE" = "1" ]; then
     rm -f "$ZIP"
   fi
 
+  # The update bundle is the stapled app itself, so an update keeps the Developer ID
+  # identity (and with it the microphone and Accessibility grants).
+  echo "==> Update bundle"
+  "$REPO_ROOT/scripts/updater-pack-macos.sh" "$APP" "$TARGET_DIR/release/bundle/updater"
+
   # The dmg Tauri produced still contains the *unstapled* app, so rebuild it
   # around the stapled one rather than shipping a container whose payload needs
   # the network to validate.
@@ -214,4 +226,9 @@ fi
 echo
 echo "App: $APP"
 [ -n "$DMG" ] && echo "Dmg: $DMG"
+if [ "$NOTARIZE" = "1" ]; then
+  echo "Update bundle: $TARGET_DIR/release/bundle/updater/"
+else
+  echo "Not notarized: no update bundle (it is made only from a notarized app)." >&2
+fi
 echo "Now run: scripts/verify-macos.sh"

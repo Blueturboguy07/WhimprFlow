@@ -39,6 +39,11 @@ reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-fea
 sha2 = "0.10"
 # publik.rs: the install ID and the usage-count ID are UUID v4.
 uuid = { version = "1", features = ["v4"] }
+# Signed self-update (src/updates.rs, docs/updates.md): the updater, its restart
+# question, and the timer of the daily check (tokio is already in the tree via Tauri).
+tauri-plugin-updater = "2"
+tauri-plugin-dialog = "2"
+tokio = { version = "1", features = ["time"] }
 
 # Only Windows/Linux need this: relaunching the exe otherwise spawns a second,
 # independent process (duplicate taskbar entry). macOS's Dock re-activates the

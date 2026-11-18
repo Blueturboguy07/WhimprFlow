@@ -16,6 +16,7 @@ mod paste;
 mod permissions;
 mod publik;
 mod publik_gate;
+mod updates;
 #[cfg(target_os = "windows")]
 mod win;
 #[cfg(target_os = "linux")]
@@ -454,15 +455,18 @@ fn start_app(app: &tauri::AppHandle, (_key, wallet, choice): publik_gate::Gate) 
     permissions::watch(app.clone());
 
     let open = MenuItem::with_id(app, "open", "Open WhimprFlow", true, None::<&str>)?;
+    // The update check by hand (src/updates.rs). The tray is the one menu on both platforms.
+    let updates_item = MenuItem::with_id(app, "updates", "Check for Updates…", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit WhimprFlow", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &sep, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &updates_item, &sep, &quit])?;
 
     let mut tray = TrayIconBuilder::new()
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_hub(app),
+            "updates" => updates::check_now(app),
             "quit" => app.exit(0),
             _ => {}
         });
@@ -482,6 +486,8 @@ pub fn run() {
         println!("{}", publik::self_test());
         return;
     }
+    // Updater test hook (PUBLIK_UPDATE_SELF_TEST): no window, no gate, no microphone; see updates.rs.
+    let update_self_test = updates::self_test_mode();
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default();
     // Relaunching the app (double-clicking the exe/installer shortcut again) must
@@ -494,7 +500,8 @@ pub fn run() {
             show_hub(app);
         }));
     }
-    builder
+    // The updater and its restart question (src/updates.rs, docs/updates.md).
+    updates::plugins(builder)
         .plugin(
             // The customizable hands-free hotkey lives here — the OS registers the
             // chord, so pressing it fires our handler AND is suppressed from the
@@ -537,7 +544,15 @@ pub fn run() {
             publik::publik_dismiss_notice,
             publik::publik_open_link
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            if let Some(mode) = update_self_test {
+                updates::run_self_test(app.handle(), mode);
+                return Ok(());
+            }
+            // Update checks start at launch, before the gate, so a gate bug can be fixed by an
+            // update. PUBLIK_NO_AUTO_UPDATE=1 turns them off (CI).
+            updates::start(app.handle());
+
             // Regular app: shows in the Dock with a normal, focusable main window.
             // (Can switch to a menu-bar-only accessory app later for the Wispr look.)
             #[cfg(target_os = "macos")]

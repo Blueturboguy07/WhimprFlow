@@ -13,6 +13,12 @@
 #   APPLE_CERT_P12_BASE64   Developer ID Application certificate (R5R3ZS54LV), base64 .p12
 #   APPLE_CERT_PASSWORD     the .p12 password
 #   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID   notarytool credentials (app-specific password)
+#   TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#                           the publik update key (docs/updates.md): scripts/build-macos.sh
+#                           packs and signs the update bundle from the stapled app
+#
+# The release gets the dmg, the update bundle (WhimprFlow_<v>_aarch64.app.tar.gz + .sig)
+# and, once the Windows installer and its .sig are on it too (windows.yml), latest.json.
 #
 # Build only via `tauri build` (through scripts/build-macos.sh) — never a bare
 # `cargo build` + manual codesign (that blanks the UI and drops TCC grants).
@@ -30,6 +36,8 @@ permissions:
 # publik telemetry is off on build machines: a test run is not a user.
 env:
   DO_NOT_TRACK: "1"
+  # No automatic update check while the checks start the app (src-tauri/src/updates.rs).
+  PUBLIK_NO_AUTO_UPDATE: "1"
 
 jobs:
   # Tag builds need the Apple certificate secrets. Until they are set, releases
@@ -99,6 +107,16 @@ jobs:
           fi
           echo "publik app token present (value not shown)"
 
+      - name: Require the update key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY secret is not set — a release without the update bundle cannot update itself." >&2
+            exit 1
+          fi
+          echo "update key present (value not shown)"
+
       - name: Import the Developer ID certificate
         env:
           APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
@@ -123,6 +141,8 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: scripts/build-macos.sh
 
       # DO_NOT_TRACK: the check starts the app, and a CI runner is not a user.
@@ -131,9 +151,19 @@ jobs:
           DO_NOT_TRACK: "1"
         run: scripts/verify-macos.sh --require-notarized
 
-      - name: Attach the dmg to the release
+      - name: Attach the dmg and the update bundle to the release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/bundle/dmg/*.dmg
+          files: |
+            target/release/bundle/dmg/*.dmg
+            target/release/bundle/updater/*.app.tar.gz
+            target/release/bundle/updater/*.app.tar.gz.sig
           fail_on_unmatched_files: true
+
+      # latest.json, when the Windows installer and its .sig are on the release too.
+      - name: Write the update feed
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/updater-release-feed.sh "$GITHUB_REF_NAME" --if-complete
