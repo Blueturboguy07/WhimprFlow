@@ -149,7 +149,9 @@ jobs:
   # Same steps as .github/workflows/windows.yml, without the release upload.
   windows:
     name: Windows x64 (NSIS installer, unsigned)
-    runs-on: windows-latest
+    # Not windows-latest: since 2026-11-19 that is the windows-2025-vs2026 image, where whisper.cpp's
+    # CMake build finds no assembler (CMAKE_ASM_COMPILER points at a cl.exe path that does not exist).
+    runs-on: windows-2025
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4

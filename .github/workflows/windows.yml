@@ -61,7 +61,9 @@ jobs:
   windows:
     needs: guard
     if: needs.guard.outputs.build == 'true'
-    runs-on: windows-latest
+    # Not windows-latest: since 2026-11-19 that is the windows-2025-vs2026 image, where whisper.cpp's
+    # CMake build finds no assembler (CMAKE_ASM_COMPILER points at a cl.exe path that does not exist).
+    runs-on: windows-2025
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
