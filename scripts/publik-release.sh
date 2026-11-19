@@ -301,7 +301,9 @@ if [ "$RSTATE" != published ]; then
     ok "$EXE and its .sig (version $V; the CI signature verifies with the app's public key)"
 
     say "Sign, notarize and staple the Mac app; update bundle; dmg"
-    if [ -f "$OUT/$DMG" ] && [ -f "$OUT/$TGZ" ] && [ -f "$OUT/$TGZ.sig" ]; then
+    # A dmg without a stapled ticket is from a run that stopped in the signing step (the dmg is
+    # written before it is signed and notarized): make the files again.
+    if [ -f "$OUT/$DMG" ] && [ -f "$OUT/$TGZ" ] && [ -f "$OUT/$TGZ.sig" ] && xcrun stapler validate -q "$OUT/$DMG" >/dev/null 2>&1; then
       note "already done in $OUT"
     else
       rm -f "$OUT/$DMG" "$OUT/$TGZ" "$OUT/$TGZ.sig" "$OUT/latest.json" "$OUT/latest.json.sig"
