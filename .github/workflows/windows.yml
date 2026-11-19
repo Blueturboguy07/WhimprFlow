@@ -61,16 +61,24 @@ jobs:
   windows:
     needs: guard
     if: needs.guard.outputs.build == 'true'
-    # Not windows-latest: since 2026-11-19 that is the windows-2025-vs2026 image, where whisper.cpp's
-    # CMake build finds no assembler (CMAKE_ASM_COMPILER points at a cl.exe path that does not exist).
-    runs-on: windows-2025
+    runs-on: windows-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # The cached target/ holds whisper.cpp's CMake cache with the compiler path of the runner image
+      # it was made on. A new image version moves the compiler, and the build then fails
+      # ("CMAKE_ASM_COMPILER ... is not a full path to an existing compiler tool", 2026-11-19).
+      # So the cache is per image version.
+      - name: Runner image version (for the build cache)
+        shell: pwsh
+        run: Add-Content $env:GITHUB_ENV "RUNNER_IMAGE_VERSION=$env:ImageVersion"
+
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: image-${{ env.RUNNER_IMAGE_VERSION }}
 
       - uses: pnpm/action-setup@v4
         with:
