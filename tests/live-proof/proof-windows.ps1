@@ -150,6 +150,7 @@ function Find-TrayIcon {
   # "hidden icons" panel: clock, network and taskbar buttons change their names and are not icons.
   $all = @(Tray-Buttons | Where-Object { -not $_.Current.IsOffscreen -and $_.Current.AutomationId -eq "NotifyItemIcon" })
   foreach ($b in $all) { if ($b.Current.Name -match "(?i)whimpr") { return $b } }
+  foreach ($b in $all) { if ([string]::IsNullOrWhiteSpace($b.Current.Name)) { return $b } }
   foreach ($b in $all) { if ($script:trayBefore -notcontains "$($b.Current.ClassName)|$($b.Current.Name)") { return $b } }
   return $null
 }
