@@ -375,7 +375,7 @@ else
   note "network: packet capture with process names" "no connection of $EXE captured (tcpdump: $(head -c 200 "$OUT/net-tcpdump.err" | tr '\n' ' ')); the log line above is the evidence of the feed answer"
 fi
 check "downloads by this job before the check: only the $FROM_TAG dmg and its checksums" "$(ls "$WORK/dl" | tr '\n' ' ')" \
-  test "$(ls "$WORK/dl" | tr '\n' ' ')" = "$(basename "$DMG") SHA256SUMS.txt "
+  test "$(ls "$WORK/dl" | LC_ALL=C sort | tr '\n' ' ')" = "$(printf '%s\n' "$(basename "$DMG")" SHA256SUMS.txt | LC_ALL=C sort | tr '\n' ' ')"
 note "menu item \"Check for Updates…\" (macOS)" "not pressed on macOS: the tray menu exists only after Sign in with publik, and the proof keeps WhimprFlow on that first screen (past it the Fn key tap would use the accessibility grant). The Windows job presses it."
 
 shot end

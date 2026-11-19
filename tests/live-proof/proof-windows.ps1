@@ -146,13 +146,11 @@ function Tray-Buttons { foreach ($h in @(Tray-Hosts)) { foreach ($b in $h.FindAl
 # like the app, or else the button that was not in the tray before the app started ($trayBefore).
 $trayBefore = @()
 function Find-TrayIcon {
-  $all = @(Tray-Buttons | Where-Object { -not $_.Current.IsOffscreen })
+  # Only notification-area icons (AutomationId NotifyItemIcon), in the tray or in the open
+  # "hidden icons" panel: clock, network and taskbar buttons change their names and are not icons.
+  $all = @(Tray-Buttons | Where-Object { -not $_.Current.IsOffscreen -and $_.Current.AutomationId -eq "NotifyItemIcon" })
   foreach ($b in $all) { if ($b.Current.Name -match "(?i)whimpr") { return $b } }
-  foreach ($b in $all) {
-    $n = $b.Current.Name
-    if ($n -match "(?i)hidden icons|chevron" -or $b.Current.AutomationId -eq "SystemTrayIcon") { continue }
-    if ($script:trayBefore -notcontains "$($b.Current.ClassName)|$n") { return $b }
-  }
+  foreach ($b in $all) { if ($script:trayBefore -notcontains "$($b.Current.ClassName)|$($b.Current.Name)") { return $b } }
   return $null
 }
 function RightClick-Center($el) { $r = $el.Current.BoundingRectangle; [Mouse]::RightClick([int]($r.X + $r.Width / 2), [int]($r.Y + $r.Height / 2)) }
@@ -266,7 +264,9 @@ $script:trayBefore = @(Tray-Buttons | ForEach-Object { "$($_.Current.ClassName)|
 $trayBefore | Set-Content (Join-Path $Out "tray-buttons-before.txt")
 $app = Start-WhimprFlow $log1
 Log "started $((Installed-Exe).FullName) pid $($app.Id)"
-Check "the updater asks the live feed" (Wait-Until 60 { Log-Has $log1 "checking for updates $feed" }) $feed
+# WhimprFlow's Windows build writes no request line; its updater line is the answer from the feed
+# compiled into the app (the live feed above; no override is set in this job).
+Check "the updater answers from the live feed" (Wait-Until 180 { Log-Has $log1 "] updates: " }) $feed
 
 if ($mode -eq "no-update") {
   Check "the app reports '$from is the latest version'" (Wait-Until 120 { Log-Has $log1 "updates: $from is the latest version" }) ""
