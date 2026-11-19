@@ -1,0 +1,75 @@
+# Live update proof: installs a PUBLISHED WhimprFlow release on clean GitHub runners the way a user
+# does, starts it the normal way, and lets the app's own updater ask the LIVE publik feed
+# (https://publikhq.com/api/updates/whimprflow/latest.json). No test hook, no feed override, no build.
+#   - expect_version = the version of from_tag: the app must find no update and stay as it is
+#     (proves the download, Gatekeeper, the TCC rows, the launch, the feed request, the menu item).
+#   - expect_version higher: the feed must serve it; the app must install it by itself, ask, and
+#     run it after "Restart"; "Later" keeps the old process running.
+# macOS also writes real TCC grants (camera, microphone, screen capture, accessibility) before the
+# update and checks after it that every stored csreq is still satisfied by the installed app.
+# Details: tests/live-proof/proof-macos.sh and proof-windows.ps1. Never run these on a desk computer.
+# Logs and screenshots: the live-proof-* artifacts. Wrong signatures are proven by updater-proof.yml.
+name: live-update-proof
+
+on:
+  push:
+    branches: [live-proof] # TEMPORARY, removed before the merge
+  workflow_dispatch:
+    inputs:
+      from_tag:
+        description: Published release to install first (N), for example v0.2.8
+        required: true
+      expect_version:
+        description: Version the app must run after the live check (N+1, or N for "no update")
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  FROM_TAG: ${{ inputs.from_tag || 'v0.2.8' }}
+  EXPECT_VERSION: ${{ inputs.expect_version || '0.2.8' }}
+
+jobs:
+  macos:
+    name: macOS arm64 (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tests/live-proof
+
+      - name: Live update proof
+        timeout-minutes: 40
+        run: bash tests/live-proof/proof-macos.sh "$FROM_TAG" "$EXPECT_VERSION" out
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-proof-macos
+          path: out/
+          retention-days: 30
+
+  windows:
+    name: Windows x64 (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tests/live-proof
+
+      - name: Live update proof
+        shell: powershell
+        timeout-minutes: 40
+        run: |
+          & powershell -ExecutionPolicy Bypass -File tests/live-proof/proof-windows.ps1 -FromTag $env:FROM_TAG -Expect $env:EXPECT_VERSION -Out out
+          exit $LASTEXITCODE
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-proof-windows
+          path: out/
+          retention-days: 30

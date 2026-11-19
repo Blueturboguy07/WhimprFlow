@@ -82,3 +82,8 @@ objc2 = "0.6"
 rdev = "0.5"
 # Keyboard simulation is done via ydotool (Wayland) or xdotool (X11) as subprocess
 # calls, avoiding libxdo/libei C dependency issues.
+
+[dev-dependencies]
+# The daily-check test in src/updates.rs runs the schedule on tokio's paused clock. No new crate:
+# only test features of the tokio that is already in the tree.
+tokio = { version = "1", features = ["rt", "time", "test-util"] }

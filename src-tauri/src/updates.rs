@@ -81,18 +81,29 @@ pub fn start(app: &AppHandle) {
         return;
     }
     let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(FIRST_CHECK_AFTER).await;
-        let mut last: Option<SystemTime> = None;
-        loop {
-            // A clock that moved back gives an error here; that counts as due.
-            if last.map_or(true, |t| t.elapsed().map_or(true, |e| e >= CHECK_EVERY)) {
-                last = Some(SystemTime::now());
-                check(app.clone(), false).await;
-            }
-            tokio::time::sleep(TICK).await;
+    tauri::async_runtime::spawn(daily_checks(SystemTime::now, move || check(app.clone(), false)));
+}
+
+/// The schedule of the automatic checks: the first one FIRST_CHECK_AFTER after launch, then one
+/// each time a day has passed on `clock` (the wall clock in the app), looked at every TICK. Runs
+/// until the app exits. The clock is a parameter so the test can move it.
+async fn daily_checks<C, F, Fut>(clock: C, mut run_check: F)
+where
+    C: Fn() -> SystemTime,
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    tokio::time::sleep(FIRST_CHECK_AFTER).await;
+    let mut last: Option<SystemTime> = None;
+    loop {
+        // A clock that moved back gives an error here; that counts as due.
+        let now = clock();
+        if last.map_or(true, |t| now.duration_since(t).map_or(true, |e| e >= CHECK_EVERY)) {
+            last = Some(now);
+            run_check().await;
         }
-    });
+        tokio::time::sleep(TICK).await;
+    }
 }
 
 /// "Check for Updates…": the same check, with its result shown.
@@ -378,6 +389,74 @@ fn emit(report: &Value) {
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime};
+
+    const HOUR: Duration = Duration::from_secs(3600);
+
+    /// Runs `daily_checks` on tokio's paused clock (fake timers: time moves only when the test
+    /// waits, and at once). The wall clock follows the paused clock, plus `jump` seconds.
+    /// `test` gets the start instant and the number of checks so far.
+    fn with_fake_time<T, Fut>(jump: Arc<AtomicU64>, test: T)
+    where
+        T: FnOnce(tokio::time::Instant, Arc<AtomicUsize>) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().start_paused(true).build().unwrap();
+        rt.block_on(async move {
+            let start = tokio::time::Instant::now();
+            let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_795_000_000);
+            let clock = move || base + start.elapsed() + Duration::from_secs(jump.load(Ordering::SeqCst));
+            let runs = Arc::new(AtomicUsize::new(0));
+            let counter = runs.clone();
+            let schedule = tokio::spawn(super::daily_checks(clock, move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                async {}
+            }));
+            test(start, runs).await;
+            schedule.abort();
+        });
+    }
+
+    /// The daily check is scheduled: the first check 10 s after launch, none again within the
+    /// day, then one each time 24 hours have passed (seen at the next look at the clock).
+    #[test]
+    fn the_daily_check_is_scheduled_and_fires_every_24_hours() {
+        with_fake_time(Arc::new(AtomicU64::new(0)), |start, runs| async move {
+            let count = || runs.load(Ordering::SeqCst);
+            tokio::time::sleep_until(start + Duration::from_secs(9)).await;
+            assert_eq!(count(), 0, "no check before 10 s");
+            tokio::time::sleep_until(start + Duration::from_secs(11)).await;
+            assert_eq!(count(), 1, "the first check 10 s after launch");
+            tokio::time::sleep_until(start + 23 * HOUR).await;
+            assert_eq!(count(), 1, "no second check within the day");
+            tokio::time::sleep_until(start + 24 * HOUR + super::FIRST_CHECK_AFTER + super::TICK + Duration::from_secs(60)).await;
+            assert_eq!(count(), 2, "the second check after 24 hours");
+            tokio::time::sleep_until(start + 47 * HOUR).await;
+            assert_eq!(count(), 2, "no third check within the second day");
+            tokio::time::sleep_until(start + 48 * HOUR + super::FIRST_CHECK_AFTER + super::TICK * 2 + Duration::from_secs(60)).await;
+            assert_eq!(count(), 3, "the third check after 48 hours");
+        });
+    }
+
+    /// A day that passed on the wall clock while the computer slept counts: the check comes at
+    /// the next look at the clock (TICK), not after 24 more hours of running time.
+    #[test]
+    fn a_day_slept_through_brings_the_check_at_the_next_look_at_the_clock() {
+        let jump = Arc::new(AtomicU64::new(0));
+        let slept = jump.clone();
+        with_fake_time(jump, |start, runs| async move {
+            let count = || runs.load(Ordering::SeqCst);
+            tokio::time::sleep_until(start + Duration::from_secs(11)).await;
+            assert_eq!(count(), 1, "the first check 10 s after launch");
+            slept.store(25 * 3600, Ordering::SeqCst);
+            tokio::time::sleep_until(start + super::FIRST_CHECK_AFTER + super::TICK + Duration::from_secs(1)).await;
+            assert_eq!(count(), 2, "the check at the next look at the clock");
+            tokio::time::sleep_until(start + super::FIRST_CHECK_AFTER + super::TICK * 3 + Duration::from_secs(1)).await;
+            assert_eq!(count(), 2, "then not again until another day has passed");
+        });
+    }
 
     /// The shipped config: the real feed over https, the key, the strict checks. Test builds
     /// change these with `--config` and PUBLIK_UPDATE_ENDPOINT, never in tauri.conf.json.

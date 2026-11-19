@@ -25,3 +25,6 @@ src-tauri/gen/
 .env
 .env.*
 *.pem
+
+# scripts/publik-release.sh work folder
+.release/

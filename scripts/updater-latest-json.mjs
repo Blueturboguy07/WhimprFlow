@@ -18,8 +18,18 @@
 //   - the signature verifies (minisign Ed25519) over the file with the configured public key;
 //   - the signature's trusted comment carries `version:<--version>` (requireSignedVersion);
 //   - every url is absolute https (http only with --allow-http, for a local test feed).
+//
+// Check mode (scripts/publik-release.sh runs it on the files it downloads back from the draft):
+//   node scripts/updater-latest-json.mjs --check verify/latest.json --version 0.2.3 \
+//     --base-url https://github.com/<owner>/<repo>/releases/download/v0.2.3/ \
+//     --platform darwin-aarch64=verify/WhimprFlow_0.2.3_aarch64.app.tar.gz \
+//     --platform windows-x86_64=verify/WhimprFlow_0.2.3_x64-setup.exe
+// Reads the feed instead of writing one: its version must be --version, it must list exactly
+// these platforms, each url must be --base-url + the file name, each signature in the feed must
+// verify over the file (and name the version) and equal <file>.sig when that file is there.
+// <feed>.sig, when it is there, must verify over the feed itself. Writes nothing; exit 1 on a failure.
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -49,6 +59,14 @@ const pubkeyB64 = JSON.parse(readFileSync(configPath, "utf8"))?.plugins?.updater
 if (!pubkeyB64) die(`${configPath} has no plugins.updater.pubkey`);
 const pub = parsePublicKey(pubkeyB64);
 
+const checkFeed = opt.check ? JSON.parse(readFileSync(opt.check, "utf8")) : null;
+if (checkFeed) {
+  if (checkFeed.version !== version) die(`${opt.check} announces version ${checkFeed.version}, not ${version}`);
+  if (Number.isNaN(Date.parse(checkFeed.pub_date))) die(`${opt.check} has no valid pub_date`);
+  const extra = Object.keys(checkFeed.platforms ?? {}).filter((t) => !opt.platform.some((spec) => spec.startsWith(`${t}=`)));
+  if (extra.length) die(`${opt.check} lists platforms that were not given: ${extra.join(", ")}`);
+}
+
 const platforms = {};
 for (const spec of opt.platform) {
   const eq = spec.indexOf("=");
@@ -57,12 +75,34 @@ for (const spec of opt.platform) {
   const file = spec.slice(eq + 1);
   if (!/^(darwin|windows|linux)-(aarch64|x86_64|i686|armv7)(-(app|nsis|msi|appimage|deb|rpm))?$/.test(target)) die(`unknown updater target ${target}`);
   const data = readFileSync(file);
-  const signature = readFileSync(`${file}.sig`, "utf8").trim();
-  const signed = checkSignature(data, signature, pub, file);
-  if (signed !== version) die(`${file}.sig was signed for version ${signed ?? "(none)"}, not ${version}`);
   const url = new URL(encodeURIComponent(basename(file)), baseUrl).toString();
+  let signature;
+  if (checkFeed) {
+    const entry = checkFeed.platforms?.[target];
+    if (!entry) die(`${opt.check} has no ${target} entry`);
+    if (entry.url !== url) die(`${opt.check}: the ${target} url is ${entry.url}, not ${url}`);
+    signature = String(entry.signature ?? "").trim();
+    if (existsSync(`${file}.sig`) && readFileSync(`${file}.sig`, "utf8").trim() !== signature) die(`${file}.sig is not the ${target} signature in ${opt.check}`);
+  } else {
+    signature = readFileSync(`${file}.sig`, "utf8").trim();
+  }
+  const signed = checkSignature(data, signature, pub, file);
+  if (signed !== version) die(`the signature of ${basename(file)} names version ${signed ?? "(none)"}, not ${version}`);
   platforms[target] = { signature, url };
   console.error(`ok  ${target}  ${basename(file)}  (${data.length} bytes, key ${pub.keyId}, version ${signed})`);
+}
+
+if (checkFeed) {
+  const feedSig = `${opt.check}.sig`;
+  if (existsSync(feedSig)) {
+    const signed = checkSignature(readFileSync(opt.check), readFileSync(feedSig, "utf8").trim(), pub, opt.check);
+    if (signed !== version) die(`${feedSig} names version ${signed ?? "(none)"}, not ${version}`);
+    console.error(`ok  feed  ${basename(feedSig)} verifies over ${basename(opt.check)}  (key ${pub.keyId}, version ${signed})`);
+  } else {
+    console.error(`--  feed  no ${basename(feedSig)} next to ${basename(opt.check)}`);
+  }
+  console.error(`ok  ${basename(opt.check)}: version ${version}, ${opt.platform.length} platform(s), every url and signature checked`);
+  process.exit(0);
 }
 
 const notes = opt["notes-file"] ? readFileSync(opt["notes-file"], "utf8").trim() : (opt.notes ?? `Version ${version}`);

@@ -57,6 +57,23 @@ would not be the app that users get.
 
 ## Cut a release
 
+One command does the release for macOS and Windows, on the release Mac:
+
+```sh
+scripts/publik-release.sh <version>
+```
+
+The head of the script lists what to commit before it (the version in each file) and each step:
+it waits for CI, takes the CI-built apps, signs and notarizes the Mac app with the keychain's
+Developer ID, makes the dmg, the update bundles and the signed feed, uploads a draft, downloads it
+back, checks every file, and publishes only when every check passed. Run the same command again
+after a failure.
+
+After publik's next intake (10:00 UTC), prove the update on clean runners:
+`gh workflow run live-update-proof.yml -f from_tag=v<old> -f expect_version=<version>`.
+
+### The same steps by hand
+
 1. Set the new version in `Cargo.toml` (workspace), `src-tauri/tauri.conf.json` and
    `ui/package.json`. Push.
 2. Run `windows.yml` (or `publik-build.yml`) on that commit. Its `whimprflow-windows-installer`
