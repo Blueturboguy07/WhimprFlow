@@ -157,8 +157,8 @@ fn get_settings() -> whimpr_core::Settings {
 
 #[tauri::command]
 fn set_settings(app: tauri::AppHandle, settings: whimpr_core::Settings) {
-    // Settings → Cleanup Engine is the same answer the sign-in gate asked for:
-    // keep the two in step, so the gate does not ask again at the next start.
+    // Settings → Cleanup Engine is the same answer the sign-in gate stores:
+    // keep the two in step, so the next start keeps the engine picked here.
     publik::sync_choice(&hotkey::current_settings(), &settings);
     hotkey::update_settings(settings);
     // The hands-free hotkey may have changed — re-register it from the new
