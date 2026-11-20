@@ -391,6 +391,10 @@ sleep 20
 shot menu-signed-in
 MENU_PROC="(first process whose unix id is $PID)"
 ui "get name of every menu item of menu 1 of menu bar item 1 of menu bar 2 of $MENU_PROC" > "$OUT/tray-menu-items.txt" 2>&1
+# macOS can ask "Allow Python to find devices on local networks?" for the stand-in: answer it, it is
+# not the app's window.
+not_app_question() { local t; t="$(texts_of UserNotificationCenter)"; case "$t" in *"local network"*) press UserNotificationCenter Allow || press UserNotificationCenter "Don’t Allow"; sleep 2; return 0 ;; esac; return 1; }
+for n in 1 2 3; do has_window UserNotificationCenter && not_app_question || break; done
 MENU_ANSWER=""
 for attempt in 1 2 3; do
   # A click on a status item returns only when its menu closes: start it in the background.
@@ -398,7 +402,10 @@ for attempt in 1 2 3; do
   sleep 3
   shot "menu-open-$attempt"
   ui "click (first menu item of menu 1 of menu bar item 1 of menu bar 2 of $MENU_PROC whose name starts with \"Check for Updates\")" >> "$OUT/tray-menu-click.txt" 2>&1
-  if wait_for 30 has_window UserNotificationCenter; then MENU_ANSWER="$(texts_of UserNotificationCenter)"; break; fi
+  if wait_for 30 has_window UserNotificationCenter; then
+    if not_app_question; then continue; fi
+    MENU_ANSWER="$(texts_of UserNotificationCenter)"; break
+  fi
 done
 shot menu-answer
 check "[menu] \"Check for Updates…\" clicked in the tray menu, and the app answers" "$MENU_ANSWER" test -n "$MENU_ANSWER"
