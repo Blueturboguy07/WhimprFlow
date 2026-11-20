@@ -133,8 +133,16 @@ function Dialog-Text($w) {
   return (($names | Where-Object { $_ }) -join " | ")
 }
 function Press($w, [string]$name) {
+  # A task dialog's custom buttons are command links: not always of type Button, and the name can
+  # carry a second line. Look at every element, for 10 s.
   $b = $null
-  foreach ($e in $w.FindAll($TS::Descendants, (Cond $AE::ControlTypeProperty $CT::Button))) { if ($e.Current.Name -eq $name) { $b = $e; break } }
+  for ($try = 0; $try -lt 20 -and -not $b; $try++) {
+    foreach ($e in $w.FindAll($TS::Descendants, [System.Windows.Automation.Condition]::TrueCondition)) {
+      $n = $e.Current.Name
+      if ($n -and ($n -eq $name -or (($n -split "[`r`n]")[0]) -eq $name)) { $b = $e; break }
+    }
+    if (-not $b) { Start-Sleep -Milliseconds 500 }
+  }
   if (-not $b) { return $false }
   try { $b.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() } catch { Click-Center $b }
   return $true
