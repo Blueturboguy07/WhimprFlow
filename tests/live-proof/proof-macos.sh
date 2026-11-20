@@ -405,12 +405,18 @@ shot menu-signed-in-again
 MENU_PROC="(first process whose unix id is $PID)"
 ui "get name of every menu item of menu 1 of menu bar item 1 of menu bar 2 of $MENU_PROC" > "$OUT/tray-menu-items.txt" 2>&1
 MENU_ANSWER=""
+swiftc -O -o "$WORK/click" "$HERE/click.swift" 2>> "$OUT/osascript.log"
 for attempt in 1 2 3; do
-  # A click on a status item returns only when its menu closes: start it in the background.
-  (osascript -e "tell application \"System Events\" to click menu bar item 1 of menu bar 2 of $MENU_PROC" >> "$OUT/osascript.log" 2>&1 &)
-  sleep 3
+  # The tray icon opens its menu only for a real mouse click (right button), at the icon's place.
+  POS="$(ui "get position of menu bar item 1 of menu bar 2 of $MENU_PROC" | tr -d ' ')"
+  echo "attempt $attempt: tray icon at $POS" >> "$OUT/tray-menu-click.txt"
+  "$WORK/click" "$((${POS%%,*} + 11))" "$((${POS##*,} + 11))" right >> "$OUT/tray-menu-click.txt" 2>&1
+  sleep 2
   shot "menu-open-$attempt"
-  ui "click (first menu item of menu 1 of menu bar item 1 of menu bar 2 of $MENU_PROC whose name starts with \"Check for Updates\")" >> "$OUT/tray-menu-click.txt" 2>&1
+  # The open menu takes the keyboard: type the item's first letters, then Return.
+  ui 'keystroke "Check"' >> "$OUT/tray-menu-click.txt" 2>&1
+  sleep 1
+  ui 'key code 36' >> "$OUT/tray-menu-click.txt" 2>&1
   if wait_for 30 has_window UserNotificationCenter; then
     if not_app_question; then continue; fi
     MENU_ANSWER="$(texts_of UserNotificationCenter)"; break
