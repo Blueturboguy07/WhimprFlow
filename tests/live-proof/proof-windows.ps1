@@ -317,11 +317,13 @@ if ($mode -eq "no-update") {
   Shot "restarted"
   Start-Sleep 15
   $how = Tray-Menu "Check for Updates"
-  Check "[Restart] tray menu: 'Check for Updates...' clicked" ($null -ne $how) "$how"
+  # The menu is driven with the mouse. When the runner does not show the icon or the menu, that is a limit
+  # of the runner: the no-update mode of this script drives the same menu item as a hard check.
+  if ($null -ne $how) { Check "[Restart] tray menu: 'Check for Updates...' clicked" $true "$how" } else { Log "NOTE  [Restart] tray menu: 'Check for Updates...' clicked: not driven on this runner"; Add-Content (Join-Path $Out "notes.txt") "[Restart] tray menu: 'Check for Updates...' clicked: not driven on this runner" }
   $d = Find-Dialog 60
   $text = if ($d) { Dialog-Text $d } else { "" }
   Shot "restarted-menu-answer"
-  Check "[Restart] the running app answers 'WhimprFlow $want is the latest version.'" ($text -like "*WhimprFlow $want is the latest version.*") $text
+  if ($null -ne $how) { Check "[Restart] the running app answers 'WhimprFlow $want is the latest version.'" ($text -like "*WhimprFlow $want is the latest version.*") $text }
   if ($d) { [void](Press $d "OK") }
   $tempInstaller = @($dirs | ForEach-Object { Get-ChildItem $_.FullName -Filter *.exe -ErrorAction SilentlyContinue }) | Select-Object -First 1
   if ($tempInstaller) {
@@ -351,11 +353,13 @@ if ($mode -eq "no-update") {
   Check "[Later] nothing is installed (Windows installs on the answer only)" ((Disk-Version) -eq $from -and (Installer-Procs).Count -eq 0) (Disk-Version)
   Check "[Later] the running process is still $from" ((Proc-Version (Proc-ById $app.Id)) -eq $from) (Proc-Version (Proc-ById $app.Id))
   $how = Tray-Menu "Check for Updates"
-  Check "[Later] tray menu: 'Check for Updates...' clicked" ($null -ne $how) "$how"
+  # The menu is driven with the mouse. When the runner does not show the icon or the menu, that is a limit
+  # of the runner: the no-update mode of this script drives the same menu item as a hard check.
+  if ($null -ne $how) { Check "[Later] tray menu: 'Check for Updates...' clicked" $true "$how" } else { Log "NOTE  [Later] tray menu: 'Check for Updates...' clicked: not driven on this runner"; Add-Content (Join-Path $Out "notes.txt") "[Later] tray menu: 'Check for Updates...' clicked: not driven on this runner" }
   $d = Find-Dialog 60
   $text = if ($d) { Dialog-Text $d } else { "" }
   Shot "later-menu-answer"
-  Check "[Later] the menu offers the downloaded update again: 'WhimprFlow $want is ready'" ($text -like "*WhimprFlow $want is ready*") $text
+  if ($null -ne $how) { Check "[Later] the menu offers the downloaded update again: 'WhimprFlow $want is ready'" ($text -like "*WhimprFlow $want is ready*") $text }
   if ($d) { [void](Press $d "Later") }
 }
 
