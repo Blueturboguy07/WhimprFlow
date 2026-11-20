@@ -395,6 +395,15 @@ ui "get name of every menu item of menu 1 of menu bar item 1 of menu bar 2 of $M
 # not the app's window.
 not_app_question() { local t; t="$(texts_of UserNotificationCenter)"; case "$t" in *"local network"*) press UserNotificationCenter Allow || press UserNotificationCenter "Don’t Allow"; sleep 2; return 0 ;; esac; return 1; }
 for n in 1 2 3; do has_window UserNotificationCenter && not_app_question || break; done
+# The question blocked the stand-in while the app started: open the app again, now signed in.
+quit_app
+printf '{"key":"pk_ci_fake","base_url":"http://127.0.0.1:%s/api/v1","install_id":"00000000-0000-4000-8000-000000000000","claim_url":"https://publikhq.com/claim/CI","choice":"own_key"}' "$PORT" > "$CREDENTIAL"
+launch "$OUT/app-menu.log" menu-again
+sleep 20
+for n in 1 2 3; do has_window UserNotificationCenter && not_app_question || break; done
+shot menu-signed-in-again
+MENU_PROC="(first process whose unix id is $PID)"
+ui "get name of every menu item of menu 1 of menu bar item 1 of menu bar 2 of $MENU_PROC" > "$OUT/tray-menu-items.txt" 2>&1
 MENU_ANSWER=""
 for attempt in 1 2 3; do
   # A click on a status item returns only when its menu closes: start it in the background.
