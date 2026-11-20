@@ -376,7 +376,34 @@ else
 fi
 check "downloads by this job before the check: only the $FROM_TAG dmg and its checksums" "$(ls "$WORK/dl" | tr '\n' ' ')" \
   test "$(ls "$WORK/dl" | LC_ALL=C sort | tr '\n' ' ')" = "$(printf '%s\n' "$(basename "$DMG")" SHA256SUMS.txt | LC_ALL=C sort | tr '\n' ' ')"
-note "menu item \"Check for Updates…\" (macOS)" "not pressed on macOS: the tray menu exists only after Sign in with publik, and the proof keeps WhimprFlow on that first screen (past it the Fn key tap would use the accessibility grant). The Windows job presses it."
+# ---- Menu item "Check for Updates…", with the stand-in sign-in ---------------------------------
+# The tray menu exists only after sign-in. All permission checks are done, so the app may now run
+# signed in: the stand-in answers "claimed", and the credential file says "own key".
+quit_app
+kill "$FAKE_PID" 2>/dev/null
+sleep 1
+python3 "$HERE/fake-publik.py" "$PORT" claimed > "$OUT/fake-publik-claimed.log" 2>&1 &
+FAKE_PID=$!
+sleep 2
+printf '{"key":"pk_ci_fake","base_url":"http://127.0.0.1:%s/api/v1","install_id":"00000000-0000-4000-8000-000000000000","claim_url":"https://publikhq.com/claim/CI","choice":"own_key"}' "$PORT" > "$CREDENTIAL"
+check "[menu] WhimprFlow opens signed in (stand-in sign-in)" "" launch "$OUT/app-menu.log" menu
+sleep 20
+shot menu-signed-in
+MENU_PROC="(first process whose unix id is $PID)"
+ui "get name of every menu item of menu 1 of menu bar item 1 of menu bar 2 of $MENU_PROC" > "$OUT/tray-menu-items.txt" 2>&1
+MENU_ANSWER=""
+for attempt in 1 2 3; do
+  # A click on a status item returns only when its menu closes: start it in the background.
+  (osascript -e "tell application \"System Events\" to click menu bar item 1 of menu bar 2 of $MENU_PROC" >> "$OUT/osascript.log" 2>&1 &)
+  sleep 3
+  shot "menu-open-$attempt"
+  ui "click (first menu item of menu 1 of menu bar item 1 of menu bar 2 of $MENU_PROC whose name starts with \"Check for Updates\")" >> "$OUT/tray-menu-click.txt" 2>&1
+  if wait_for 30 has_window UserNotificationCenter; then MENU_ANSWER="$(texts_of UserNotificationCenter)"; break; fi
+done
+shot menu-answer
+check "[menu] \"Check for Updates…\" clicked in the tray menu, and the app answers" "$MENU_ANSWER" test -n "$MENU_ANSWER"
+check "[menu] the answer is \"WhimprFlow $EXPECT is the latest version.\"" "$MENU_ANSWER" sh -c 'printf "%s" "$1" | grep -q "$2 is the latest version"' _ "$MENU_ANSWER" "$EXPECT"
+press UserNotificationCenter OK 2>/dev/null || true
 
 shot end
 echo

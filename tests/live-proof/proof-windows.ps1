@@ -257,13 +257,33 @@ $fake = Start-Process -FilePath python -ArgumentList "`"$here\fake-publik.py`"",
   -RedirectStandardOutput (Join-Path $Out "fake-publik.log") -RedirectStandardError (Join-Path $Out "fake-publik.err")
 $apps = Join-Path $env:LOCALAPPDATA "publik\apps"
 New-Item -ItemType Directory -Force $apps | Out-Null
-'{"key":"pk_ci_fake","base_url":"http://127.0.0.1:' + $port + '/api/v1","install_id":"00000000-0000-4000-8000-000000000000","claim_url":"https://publikhq.com/claim/CI","choice":"own_key"}' |
-  Set-Content (Join-Path $apps "whimprflow.json") -Encoding ASCII
+function Seed-SignIn {
+  '{"key":"pk_ci_fake","base_url":"http://127.0.0.1:' + $port + '/api/v1","install_id":"00000000-0000-4000-8000-000000000000","claim_url":"https://publikhq.com/claim/CI","choice":"own_key"}' |
+    Set-Content (Join-Path $apps "whimprflow.json") -Encoding ASCII
+}
+Seed-SignIn
 $env:PUBLIK_ORIGIN = "http://127.0.0.1:$port"
 $env:DO_NOT_TRACK = "1"
 $env:RUST_LOG = "info,tauri_plugin_updater=debug"
 Wait-Until 20 { try { Invoke-WebRequest "http://127.0.0.1:$port/api/v1/wallet" -UseBasicParsing | Out-Null; $true } catch { $false } } | Out-Null
 Note "sign-in" "PUBLIK_ORIGIN is a local stand-in that answers 'claimed' (own key): no real account, no write to publik"
+# The stand-in sign-in can end on the question "Connect your plan" (after a reinstall). A user
+# answers it one time; the proof answers "Use my own key", so the app shows its menu.
+function Ensure-Main {
+  for ($t = 0; $t -lt 10; $t++) {
+    foreach ($p in @(App-Procs)) {
+      foreach ($w in $root.FindAll($TS::Children, (Cond $AE::ProcessIdProperty $p.Id))) {
+        foreach ($e in $w.FindAll($TS::Descendants, (Cond $AE::NameProperty "Use my own key"))) {
+          try { $e.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke() } catch { Click-Center $e }
+          Start-Sleep 6
+          return "answered 'Use my own key'"
+        }
+      }
+    }
+    Start-Sleep 2
+  }
+  return "no question"
+}
 function Start-WhimprFlow([string]$log) {
   $exe = (Installed-Exe).FullName
   return Start-Process -FilePath $exe -PassThru -RedirectStandardError $log -RedirectStandardOutput "$log.stdout"
@@ -316,14 +336,23 @@ if ($mode -eq "no-update") {
   Check "[Restart] the running process is $want (file version of its image)" ($new -and (Proc-Version $new) -eq $want) "$(if ($new) { Proc-Version $new })"
   Shot "restarted"
   Start-Sleep 15
+  # The installer opened the new version without this job's environment, so that process asks the
+  # real publik for a sign-in. Start the new version again with the stand-in sign-in (a user stays
+  # signed in), then use its menu.
+  Stop-App
+  Seed-SignIn
+  $app = Start-WhimprFlow (Join-Path $Out "app-1b.log")
+  Start-Sleep 15
+  Log "new version started again with the stand-in sign-in: $(Ensure-Main)"
+  Shot "restarted-signed-in"
   $how = Tray-Menu "Check for Updates"
   # The menu is driven with the mouse. When the runner does not show the icon or the menu, that is a limit
   # of the runner: the no-update mode of this script drives the same menu item as a hard check.
-  if ($null -ne $how) { Check "[Restart] tray menu: 'Check for Updates...' clicked" $true "$how" } else { Log "NOTE  [Restart] tray menu: 'Check for Updates...' clicked: not driven on this runner"; Add-Content (Join-Path $Out "notes.txt") "[Restart] tray menu: 'Check for Updates...' clicked: not driven on this runner" }
+  Check "[Restart] tray menu: 'Check for Updates...' clicked" ($null -ne $how) "$how"
   $d = Find-Dialog 60
   $text = if ($d) { Dialog-Text $d } else { "" }
   Shot "restarted-menu-answer"
-  if ($null -ne $how) { Check "[Restart] the running app answers 'WhimprFlow $want is the latest version.'" ($text -like "*WhimprFlow $want is the latest version.*") $text }
+  Check "[Restart] the running app answers 'WhimprFlow $want is the latest version.'" ($text -like "*WhimprFlow $want is the latest version.*") $text
   if ($d) { [void](Press $d "OK") }
   $tempInstaller = @($dirs | ForEach-Object { Get-ChildItem $_.FullName -Filter *.exe -ErrorAction SilentlyContinue }) | Select-Object -First 1
   if ($tempInstaller) {
@@ -342,6 +371,7 @@ if ($mode -eq "no-update") {
   Log "variant Later: install $from again"
   $rc = Install-From
   Check "[Later] WhimprFlow $from installed again" ($rc -eq 0 -and (Disk-Version) -eq $from) "exit $rc, $(Disk-Version)"
+  Seed-SignIn
   $log2 = Join-Path $Out "app-2.log"
   $app = Start-WhimprFlow $log2
   Check "[Later] the updater downloads $want by itself" (Wait-Until 300 { Log-Has $log2 "updates: WhimprFlow $want is ready" }) ""
@@ -352,14 +382,15 @@ if ($mode -eq "no-update") {
   Check "[Later] the app keeps running (same process)" (-not $app.HasExited) "pid $($app.Id)"
   Check "[Later] nothing is installed (Windows installs on the answer only)" ((Disk-Version) -eq $from -and (Installer-Procs).Count -eq 0) (Disk-Version)
   Check "[Later] the running process is still $from" ((Proc-Version (Proc-ById $app.Id)) -eq $from) (Proc-Version (Proc-ById $app.Id))
+  Log "before the menu: $(Ensure-Main)"
   $how = Tray-Menu "Check for Updates"
   # The menu is driven with the mouse. When the runner does not show the icon or the menu, that is a limit
   # of the runner: the no-update mode of this script drives the same menu item as a hard check.
-  if ($null -ne $how) { Check "[Later] tray menu: 'Check for Updates...' clicked" $true "$how" } else { Log "NOTE  [Later] tray menu: 'Check for Updates...' clicked: not driven on this runner"; Add-Content (Join-Path $Out "notes.txt") "[Later] tray menu: 'Check for Updates...' clicked: not driven on this runner" }
+  Check "[Later] tray menu: 'Check for Updates...' clicked" ($null -ne $how) "$how"
   $d = Find-Dialog 60
   $text = if ($d) { Dialog-Text $d } else { "" }
   Shot "later-menu-answer"
-  if ($null -ne $how) { Check "[Later] the menu offers the downloaded update again: 'WhimprFlow $want is ready'" ($text -like "*WhimprFlow $want is ready*") $text }
+  Check "[Later] the menu offers the downloaded update again: 'WhimprFlow $want is ready'" ($text -like "*WhimprFlow $want is ready*") $text
   if ($d) { [void](Press $d "Later") }
 }
 
