@@ -13,7 +13,19 @@ A **local-first, cross-platform voice dictation app** — hold a key, speak, and
 | **macOS 14+** | **Built and working** — developed and tested locally (Apple Silicon). |
 | **Windows 10/11** | **Built and working** — compiles and runs on real Windows 11 (MSVC). Push-to-talk (hold **Right Ctrl**), Whisper ASR, clipboard+`SendInput` paste, and cloud cleanup (OpenAI or any OpenAI-compatible API, e.g. OpenRouter) are verified end-to-end. Auto-learn dictionary capture is still macOS-only; the local (on-device) LLM cleanup worker builds but is CPU-only for now (no CUDA/Vulkan yet). |
 
-Both platforms are build-from-source only for now — there's no signed installer/release pipeline yet, so `git clone` + the steps below is the way to run it on either OS.
+## Install
+
+**Windows 10/11** — in PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/Blueturboguy07/WhimprFlow/main/install.ps1 | iex
+```
+
+This downloads the latest release's installer, checks its SHA-256 against the one GitHub publishes, and installs it silently for your user (`%LOCALAPPDATA%\WhimprFlow`, no admin). Or download `WhimprFlow_<version>_x64-setup.exe` yourself from [Releases](https://github.com/Blueturboguy07/WhimprFlow/releases/latest). The installer is **not code-signed**, so Windows SmartScreen may warn: click **More info → Run anyway**.
+
+**macOS 14+ (Apple Silicon)** — download the signed, notarized `.dmg` from [Releases](https://github.com/Blueturboguy07/WhimprFlow/releases/latest).
+
+To build from source instead, follow the steps below.
 
 ---
 
