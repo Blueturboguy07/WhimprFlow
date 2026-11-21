@@ -1,7 +1,7 @@
 //! publik: Sign in with publik, usage counting, and publik API as one cleanup engine.
 //!
 //! The first part of this file is the publik module from
-//! https://publikhq.com/sdk/publik.rs.md. WhimprFlow changes five lines of it:
+//! https://publikhq.com/sdk/publik.rs.md. WhimprFlow changes six things in it:
 //! 1. `APP_TOKEN` is compiled in from `PUBLIK_APP_TOKEN` at build time (scripts/build-macos.sh,
 //!    the CI secret), as every WhimprFlow build before it. There is no token file in the repo.
 //! 2. `APP_VERSION` is the Cargo package version.
@@ -9,6 +9,9 @@
 //! 4. The origin is https://publikhq.com.
 //! 5. `start_telemetry` makes the usage-count ID file (`telemetry.json`) on the first event that
 //!    goes out, so an opt-out run (`DO_NOT_TRACK=1`) makes no file, as the README promises.
+//! 6. A signed-in person with no stored answer gets "own_key", not "publik", when the cleanup
+//!    engine already runs on a key the person entered (`GateUi::own_key_in_use`). The missing pay
+//!    screen then does not move that person to publik API.
 //!
 //! The second part ("WhimprFlow") is what the app adds on top: the status card the Hub renders,
 //! the 402 and revoked-key handling the dictation pipeline calls, and the link between the
@@ -51,7 +54,8 @@ pub fn default_base_url() -> String { format!("{}/api/v1", origin()) }
 pub enum Provider { Own { base_url: String, api_key: String }, Publik { base_url: String, api_key: String }, NeedsOwnKey }
 pub struct Screen { pub id: &'static str, pub title: &'static str, pub body: String, pub note: Option<&'static str>, pub buttons: Vec<(&'static str, &'static str)> }
 /// show(): draw the screen and return the button id pressed. Once `done` is set (the gate saw the sign-in), close it and return None.
-pub trait GateUi { fn show(&mut self, screen: &Screen, done: Arc<AtomicBool>) -> Option<&'static str>; fn open_url(&mut self, url: &str); }
+/// own_key_in_use() (WhimprFlow): true when the app already runs on a key the person entered; the gate then stores "own_key".
+pub trait GateUi { fn show(&mut self, screen: &Screen, done: Arc<AtomicBool>) -> Option<&'static str>; fn open_url(&mut self, url: &str); fn own_key_in_use(&mut self) -> bool { false } }
 
 /// ~/Library/Application Support/publik, %LOCALAPPDATA%\publik, ~/.config/publik: shared by every publik app.
 fn publik_dir() -> PathBuf {
@@ -214,7 +218,9 @@ pub fn ensure_signed_in(ui: &mut dyn GateUi) -> (String, Value, Option<String>) 
             continue;
         }
         let mut choice = if USES_AI { read_credential().and_then(|c| c["choice"].as_str().map(String::from)) } else { None };
-        if USES_AI && choice.is_none() { choice = Some("publik".to_string()); set_choice(choice.as_deref()); } // no pay screen at start: publik is the choice; the app offers a plan when publik answers 402
+        // No pay screen at start: publik is the choice; the app offers a plan when publik answers 402.
+        // WhimprFlow: an engine that already runs on the person's own key stays ("own_key").
+        if USES_AI && choice.is_none() { choice = Some(if ui.own_key_in_use() { "own_key" } else { "publik" }.to_string()); set_choice(choice.as_deref()); }
         start_telemetry();
         return (key, w, choice);
     }
@@ -783,10 +789,30 @@ fn open_publik_url(url: &str) {
 
 // ── The gate's answer and Settings → Cleanup Engine ─────────────────────────
 
+/// The gate's guard (`GateUi::own_key_in_use`), asked only for a signed-in person with no stored
+/// answer: true when the cleanup engine in the settings file runs on a key the person entered and
+/// that key is in the keychain. The gate then stores "own_key" and the engine stays as it is. The
+/// key is only checked for presence: it is never printed or logged. The gate runs before the
+/// app's own settings are loaded, so this reads the settings file.
+pub fn own_key_engine_in_use() -> bool {
+    let settings = Settings::load(&crate::hotkey::settings_path());
+    own_key_engine(settings.cleanup_mode, crate::has_key)
+}
+
+/// An own-key engine with its key present. No `_` arm: a new engine must say here whether it
+/// runs on a key the person entered.
+fn own_key_engine(mode: CleanupMode, has_key: impl Fn(&str) -> bool) -> bool {
+    match mode {
+        CleanupMode::OpenAi => has_key("openai_api_key"),
+        CleanupMode::Anthropic => has_key("anthropic_api_key"),
+        CleanupMode::Raw | CleanupMode::Local | CleanupMode::Publik => false,
+    }
+}
+
 /// The gate's answer, applied once at start. "publik" (the gate stores it by itself after
 /// sign-in when no answer is stored; there is no pay screen) selects publik API and stamps the
-/// disclosure; "own_key" moves a publik selection back to Local, the default, and leaves an
-/// own-key engine as it is.
+/// disclosure; "own_key" (also stored by the gate when `own_key_engine_in_use`) moves a publik
+/// selection back to Local, the default, and leaves an own-key engine as it is.
 pub fn apply_choice(choice: Option<&str>) {
     let mut settings = crate::hotkey::current_settings();
     let (mode, version, pending) = (settings.cleanup_mode.clone(), settings.publik_disclosure_version, settings.publik_cta_pending);
@@ -1012,6 +1038,8 @@ mod tests {
         wallet: Arc<Mutex<Value>>,
         screens: Vec<&'static str>,
         opened: Vec<String>,
+        /// The guard's answer: the engine runs on the person's own key.
+        own_key: bool,
     }
     impl GateUi for FakeUi {
         fn show(&mut self, s: &Screen, _done: Arc<AtomicBool>) -> Option<&'static str> {
@@ -1025,6 +1053,9 @@ mod tests {
             self.opened.push(url.to_string());
             self.wallet.lock().unwrap()["claim_state"] = json!("claimed");
         }
+        fn own_key_in_use(&mut self) -> bool {
+            self.own_key
+        }
     }
 
     #[test]
@@ -1033,7 +1064,7 @@ mod tests {
         let wallet = Arc::new(Mutex::new(json!({ "claim_state": "anonymous", "claim_url": "https://publikhq.com/claim/TEST",
             "plan": { "kind": "none" }, "balance_micros": 0 })));
         let (_back, dir) = gate_setup("sign-in", &wallet, Value::Null);
-        let mut ui = FakeUi { wallet: wallet.clone(), screens: vec![], opened: vec![] };
+        let mut ui = FakeUi { wallet: wallet.clone(), screens: vec![], opened: vec![], own_key: false };
         let (key, w, choice) = ensure_signed_in(&mut ui);
         assert_eq!(ui.screens, vec!["sign_in"], "Sign in with publik, then no other screen");
         assert_eq!(ui.opened, vec!["https://publikhq.com/claim/TEST".to_string()]);
@@ -1050,7 +1081,7 @@ mod tests {
         let wallet = Arc::new(Mutex::new(json!({ "claim_state": "claimed", "account": { "handle": "someone" },
             "plan": { "kind": "none" }, "balance_micros": 0, "top_up_url": "https://publikhq.com/wallet" })));
         let (_back, dir) = gate_setup("no-plan", &wallet, Value::Null);
-        let mut ui = FakeUi { wallet: wallet.clone(), screens: vec![], opened: vec![] };
+        let mut ui = FakeUi { wallet: wallet.clone(), screens: vec![], opened: vec![], own_key: false };
         let (_, w, choice) = ensure_signed_in(&mut ui);
         assert!(ui.screens.is_empty(), "no screen at all: {:?}", ui.screens);
         assert!(ui.opened.is_empty(), "no page opened: {:?}", ui.opened);
@@ -1061,17 +1092,50 @@ mod tests {
     }
 
     #[test]
+    fn an_own_key_engine_with_its_key_keeps_own_key() {
+        let _lock = GATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let wallet = Arc::new(Mutex::new(json!({ "claim_state": "claimed", "plan": { "kind": "none" }, "balance_micros": 0 })));
+        let (_back, dir) = gate_setup("own-key-engine", &wallet, Value::Null);
+        let mut ui = FakeUi { wallet: wallet.clone(), screens: vec![], opened: vec![], own_key: true };
+        let (_, _, choice) = ensure_signed_in(&mut ui);
+        assert!(ui.screens.is_empty(), "no screen at all: {:?}", ui.screens);
+        assert_eq!(choice.as_deref(), Some("own_key"), "the person's own key stays in use");
+        assert_eq!(read_credential().unwrap()["choice"], "own_key");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn a_stored_choice_is_kept() {
         let _lock = GATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
-        for stored in ["own_key", "publik"] {
+        // The guard acts only when nothing is stored: a stored "publik" stays, even with an own-key engine.
+        for (stored, own_key) in [("own_key", false), ("publik", true)] {
             let wallet = Arc::new(Mutex::new(json!({ "claim_state": "claimed", "plan": { "kind": "none" }, "balance_micros": 0 })));
             let (_back, dir) = gate_setup(&format!("kept-{stored}"), &wallet, json!(stored));
-            let mut ui = FakeUi { wallet: wallet.clone(), screens: vec![], opened: vec![] };
+            let mut ui = FakeUi { wallet: wallet.clone(), screens: vec![], opened: vec![], own_key };
             let (_, _, choice) = ensure_signed_in(&mut ui);
             assert!(ui.screens.is_empty(), "{stored}: no screen at all: {:?}", ui.screens);
             assert_eq!(choice.as_deref(), Some(stored));
             assert_eq!(read_credential().unwrap()["choice"], stored, "the stored choice stays {stored}");
             let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn only_an_own_key_engine_with_its_key_is_own_key() {
+        fn every_key(_: &str) -> bool {
+            true
+        }
+        fn no_key(_: &str) -> bool {
+            false
+        }
+        assert!(own_key_engine(CleanupMode::OpenAi, |a| a == "openai_api_key"));
+        assert!(own_key_engine(CleanupMode::Anthropic, |a| a == "anthropic_api_key"));
+        assert!(!own_key_engine(CleanupMode::OpenAi, no_key), "OpenAI with no key: publik");
+        assert!(!own_key_engine(CleanupMode::Anthropic, no_key), "Anthropic with no key: publik");
+        assert!(!own_key_engine(CleanupMode::OpenAi, |a| a == "anthropic_api_key"), "the other engine's key does not count");
+        assert!(!own_key_engine(CleanupMode::Anthropic, |a| a == "openai_api_key"), "the other engine's key does not count");
+        for mode in [CleanupMode::Local, CleanupMode::Raw, CleanupMode::Publik] {
+            assert!(!own_key_engine(mode, every_key), "{mode:?}: publik");
         }
     }
 

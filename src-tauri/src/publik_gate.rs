@@ -130,6 +130,11 @@ impl GateUi for Window {
         #[cfg(not(any(target_os = "macos", windows)))]
         let _ = std::process::Command::new("xdg-open").arg(url).spawn();
     }
+
+    /// Signed in with no stored answer: an engine that runs on the person's own key keeps it.
+    fn own_key_in_use(&mut self) -> bool {
+        publik::own_key_engine_in_use()
+    }
 }
 
 fn esc(s: &str) -> String {
