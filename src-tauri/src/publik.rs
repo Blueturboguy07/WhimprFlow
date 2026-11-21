@@ -9,9 +9,9 @@
 //! 4. The origin is https://publikhq.com.
 //! 5. `start_telemetry` makes the usage-count ID file (`telemetry.json`) on the first event that
 //!    goes out, so an opt-out run (`DO_NOT_TRACK=1`) makes no file, as the README promises.
-//! 6. A signed-in person with no stored answer gets "own_key", not "publik", when the cleanup
-//!    engine already runs on a key the person entered (`GateUi::own_key_in_use`). The missing pay
-//!    screen then does not move that person to publik API.
+//! 6. A signed-in person with no stored answer gets the answer that keeps the cleanup engine as
+//!    it is (`GateUi::start_choice`): "publik" only when the engine is already publik API, else
+//!    "own_key". The missing pay screen then never moves anyone's dictated text to the cloud.
 //!
 //! The second part ("WhimprFlow") is what the app adds on top: the status card the Hub renders,
 //! the 402 and revoked-key handling the dictation pipeline calls, and the link between the
@@ -54,8 +54,8 @@ pub fn default_base_url() -> String { format!("{}/api/v1", origin()) }
 pub enum Provider { Own { base_url: String, api_key: String }, Publik { base_url: String, api_key: String }, NeedsOwnKey }
 pub struct Screen { pub id: &'static str, pub title: &'static str, pub body: String, pub note: Option<&'static str>, pub buttons: Vec<(&'static str, &'static str)> }
 /// show(): draw the screen and return the button id pressed. Once `done` is set (the gate saw the sign-in), close it and return None.
-/// own_key_in_use() (WhimprFlow): true when the app already runs on a key the person entered; the gate then stores "own_key".
-pub trait GateUi { fn show(&mut self, screen: &Screen, done: Arc<AtomicBool>) -> Option<&'static str>; fn open_url(&mut self, url: &str); fn own_key_in_use(&mut self) -> bool { false } }
+/// start_choice() (WhimprFlow): the answer the gate stores for a signed-in person with none stored; the module page stores "publik".
+pub trait GateUi { fn show(&mut self, screen: &Screen, done: Arc<AtomicBool>) -> Option<&'static str>; fn open_url(&mut self, url: &str); fn start_choice(&mut self) -> &'static str { "publik" } }
 
 /// ~/Library/Application Support/publik, %LOCALAPPDATA%\publik, ~/.config/publik: shared by every publik app.
 fn publik_dir() -> PathBuf {
@@ -218,9 +218,9 @@ pub fn ensure_signed_in(ui: &mut dyn GateUi) -> (String, Value, Option<String>) 
             continue;
         }
         let mut choice = if USES_AI { read_credential().and_then(|c| c["choice"].as_str().map(String::from)) } else { None };
-        // No pay screen at start: publik is the choice; the app offers a plan when publik answers 402.
-        // WhimprFlow: an engine that already runs on the person's own key stays ("own_key").
-        if USES_AI && choice.is_none() { choice = Some(if ui.own_key_in_use() { "own_key" } else { "publik" }.to_string()); set_choice(choice.as_deref()); }
+        // No pay screen at start: the gate stores an answer by itself; the app offers a plan when publik answers 402.
+        // WhimprFlow: the answer keeps the person's cleanup engine as it is (GateUi::start_choice).
+        if USES_AI && choice.is_none() { choice = Some(ui.start_choice().to_string()); set_choice(choice.as_deref()); }
         start_telemetry();
         return (key, w, choice);
     }
@@ -789,44 +789,40 @@ fn open_publik_url(url: &str) {
 
 // ── The gate's answer and Settings → Cleanup Engine ─────────────────────────
 
-/// The gate's guard (`GateUi::own_key_in_use`), asked only for a signed-in person with no stored
-/// answer: true when the cleanup engine in the settings file runs on a key the person entered and
-/// that key is in the keychain. The gate then stores "own_key" and the engine stays as it is. The
-/// key is only checked for presence: it is never printed or logged. The gate runs before the
-/// app's own settings are loaded, so this reads the settings file.
-pub fn own_key_engine_in_use() -> bool {
-    let settings = Settings::load(&crate::hotkey::settings_path());
-    own_key_engine(settings.cleanup_mode, crate::has_key)
+/// The answer that goes with a cleanup engine: "publik" for publik API, "own_key" for every
+/// other engine (Local, Raw, OpenAI, Anthropic). Settings → Cleanup Engine stores it
+/// (`sync_choice`), and so does the gate for a signed-in person with no stored answer
+/// (`start_choice`). `engine_for_choice` keeps the engine as it is for this answer.
+pub fn choice_for(mode: CleanupMode) -> &'static str {
+    if matches!(mode, CleanupMode::Publik) { "publik" } else { "own_key" }
 }
 
-/// An own-key engine with its key present. No `_` arm: a new engine must say here whether it
-/// runs on a key the person entered.
-fn own_key_engine(mode: CleanupMode, has_key: impl Fn(&str) -> bool) -> bool {
-    match mode {
-        CleanupMode::OpenAi => has_key("openai_api_key"),
-        CleanupMode::Anthropic => has_key("anthropic_api_key"),
-        CleanupMode::Raw | CleanupMode::Local | CleanupMode::Publik => false,
+/// The gate's answer for a signed-in person with no stored answer (`GateUi::start_choice`): the
+/// one that keeps the cleanup engine in the settings file exactly as it is. A new person stays
+/// on Local, and dictated text never starts to go to the cloud without the person's own choice.
+/// The gate runs before the app's own settings are loaded, so this reads the settings file.
+pub fn start_choice() -> &'static str {
+    choice_for(Settings::load(&crate::hotkey::settings_path()).cleanup_mode)
+}
+
+/// The engine after an answer: "publik" selects publik API; "own_key" moves publik API back to
+/// Local, the default, and leaves every other engine as it is; no answer changes nothing.
+fn engine_for_choice(mode: CleanupMode, choice: Option<&str>) -> CleanupMode {
+    match choice {
+        Some("publik") => CleanupMode::Publik,
+        Some("own_key") if matches!(mode, CleanupMode::Publik) => CleanupMode::Local,
+        _ => mode,
     }
 }
 
-/// The gate's answer, applied once at start. "publik" (the gate stores it by itself after
-/// sign-in when no answer is stored; there is no pay screen) selects publik API and stamps the
-/// disclosure; "own_key" (also stored by the gate when `own_key_engine_in_use`) moves a publik
-/// selection back to Local, the default, and leaves an own-key engine as it is.
+/// The stored answer, applied once at start (`engine_for_choice`). "publik" also stamps the
+/// disclosure. The answer the gate stores by itself (`start_choice`) never changes the engine.
 pub fn apply_choice(choice: Option<&str>) {
     let mut settings = crate::hotkey::current_settings();
     let (mode, version, pending) = (settings.cleanup_mode.clone(), settings.publik_disclosure_version, settings.publik_cta_pending);
-    match choice {
-        Some("publik") => {
-            settings.cleanup_mode = CleanupMode::Publik;
-            settings.publik_disclosure_version = PUBLIK_DISCLOSURE_VERSION;
-        }
-        Some("own_key") => {
-            if matches!(settings.cleanup_mode, CleanupMode::Publik) {
-                settings.cleanup_mode = CleanupMode::Local;
-            }
-        }
-        _ => {}
+    settings.cleanup_mode = engine_for_choice(settings.cleanup_mode, choice);
+    if choice == Some("publik") {
+        settings.publik_disclosure_version = PUBLIK_DISCLOSURE_VERSION;
     }
     settings.publik_cta_pending = false;
     if settings.cleanup_mode != mode || settings.publik_disclosure_version != version || settings.publik_cta_pending != pending {
@@ -838,7 +834,7 @@ pub fn apply_choice(choice: Option<&str>) {
 /// file, so the next start keeps it (the gate stores "publik" only when no answer is stored).
 pub fn sync_choice(before: &Settings, after: &Settings) {
     if before.cleanup_mode != after.cleanup_mode {
-        set_choice(Some(if matches!(after.cleanup_mode, CleanupMode::Publik) { "publik" } else { "own_key" }));
+        set_choice(Some(choice_for(after.cleanup_mode)));
     }
 }
 
@@ -1038,8 +1034,8 @@ mod tests {
         wallet: Arc<Mutex<Value>>,
         screens: Vec<&'static str>,
         opened: Vec<String>,
-        /// The guard's answer: the engine runs on the person's own key.
-        own_key: bool,
+        /// What `start_choice` answers: `choice_for` the person's engine, as the gate window does.
+        start: &'static str,
     }
     impl GateUi for FakeUi {
         fn show(&mut self, s: &Screen, _done: Arc<AtomicBool>) -> Option<&'static str> {
@@ -1053,10 +1049,12 @@ mod tests {
             self.opened.push(url.to_string());
             self.wallet.lock().unwrap()["claim_state"] = json!("claimed");
         }
-        fn own_key_in_use(&mut self) -> bool {
-            self.own_key
+        fn start_choice(&mut self) -> &'static str {
+            self.start
         }
     }
+
+    const ENGINES: [CleanupMode; 5] = [CleanupMode::Local, CleanupMode::Raw, CleanupMode::OpenAi, CleanupMode::Anthropic, CleanupMode::Publik];
 
     #[test]
     fn sign_in_then_straight_in_with_no_pay_screen() {
@@ -1064,14 +1062,18 @@ mod tests {
         let wallet = Arc::new(Mutex::new(json!({ "claim_state": "anonymous", "claim_url": "https://publikhq.com/claim/TEST",
             "plan": { "kind": "none" }, "balance_micros": 0 })));
         let (_back, dir) = gate_setup("sign-in", &wallet, Value::Null);
-        let mut ui = FakeUi { wallet: wallet.clone(), screens: vec![], opened: vec![], own_key: false };
+        // A new person: no settings file yet, so the engine is the default.
+        let engine = CleanupMode::default();
+        assert_eq!(engine, CleanupMode::Local, "Local stays the default");
+        let mut ui = FakeUi { wallet: wallet.clone(), screens: vec![], opened: vec![], start: choice_for(engine) };
         let (key, w, choice) = ensure_signed_in(&mut ui);
         assert_eq!(ui.screens, vec!["sign_in"], "Sign in with publik, then no other screen");
         assert_eq!(ui.opened, vec!["https://publikhq.com/claim/TEST".to_string()]);
         assert_eq!(key, "pk_test_gate");
         assert_eq!(w["claim_state"], "claimed");
-        assert_eq!(choice.as_deref(), Some("publik"));
-        assert_eq!(read_credential().unwrap()["choice"], "publik", "the gate stores the choice by itself");
+        assert_eq!(choice.as_deref(), Some("own_key"));
+        assert_eq!(read_credential().unwrap()["choice"], "own_key", "the gate stores the answer by itself");
+        assert_eq!(engine_for_choice(engine, choice.as_deref()), CleanupMode::Local, "a new person stays on Local");
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -1081,37 +1083,43 @@ mod tests {
         let wallet = Arc::new(Mutex::new(json!({ "claim_state": "claimed", "account": { "handle": "someone" },
             "plan": { "kind": "none" }, "balance_micros": 0, "top_up_url": "https://publikhq.com/wallet" })));
         let (_back, dir) = gate_setup("no-plan", &wallet, Value::Null);
-        let mut ui = FakeUi { wallet: wallet.clone(), screens: vec![], opened: vec![], own_key: false };
+        let mut ui = FakeUi { wallet: wallet.clone(), screens: vec![], opened: vec![], start: choice_for(CleanupMode::Local) };
         let (_, w, choice) = ensure_signed_in(&mut ui);
         assert!(ui.screens.is_empty(), "no screen at all: {:?}", ui.screens);
         assert!(ui.opened.is_empty(), "no page opened: {:?}", ui.opened);
         assert!(!has_plan(&w));
-        assert_eq!(choice.as_deref(), Some("publik"));
-        assert_eq!(read_credential().unwrap()["choice"], "publik");
+        assert_eq!(choice.as_deref(), Some("own_key"));
+        assert_eq!(read_credential().unwrap()["choice"], "own_key");
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    /// Local, Raw, an own-key engine (OpenAI, Anthropic; with or without its key, the answer does
+    /// not read it) and publik API: after sign-in with no stored answer, the engine is the same.
     #[test]
-    fn an_own_key_engine_with_its_key_keeps_own_key() {
+    fn every_engine_stays_as_it_is_after_sign_in() {
         let _lock = GATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
-        let wallet = Arc::new(Mutex::new(json!({ "claim_state": "claimed", "plan": { "kind": "none" }, "balance_micros": 0 })));
-        let (_back, dir) = gate_setup("own-key-engine", &wallet, Value::Null);
-        let mut ui = FakeUi { wallet: wallet.clone(), screens: vec![], opened: vec![], own_key: true };
-        let (_, _, choice) = ensure_signed_in(&mut ui);
-        assert!(ui.screens.is_empty(), "no screen at all: {:?}", ui.screens);
-        assert_eq!(choice.as_deref(), Some("own_key"), "the person's own key stays in use");
-        assert_eq!(read_credential().unwrap()["choice"], "own_key");
-        let _ = std::fs::remove_dir_all(dir);
+        for engine in ENGINES {
+            let wallet = Arc::new(Mutex::new(json!({ "claim_state": "claimed", "plan": { "kind": "none" }, "balance_micros": 0 })));
+            let (_back, dir) = gate_setup(&format!("engine-{engine:?}"), &wallet, Value::Null);
+            let mut ui = FakeUi { wallet: wallet.clone(), screens: vec![], opened: vec![], start: choice_for(engine) };
+            let (_, _, choice) = ensure_signed_in(&mut ui);
+            assert!(ui.screens.is_empty(), "{engine:?}: no screen at all: {:?}", ui.screens);
+            let expected = if engine == CleanupMode::Publik { "publik" } else { "own_key" };
+            assert_eq!(choice.as_deref(), Some(expected), "{engine:?}");
+            assert_eq!(read_credential().unwrap()["choice"], expected, "{engine:?}");
+            assert_eq!(engine_for_choice(engine, choice.as_deref()), engine, "{engine:?}: the engine does not change");
+            let _ = std::fs::remove_dir_all(dir);
+        }
     }
 
     #[test]
     fn a_stored_choice_is_kept() {
         let _lock = GATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
-        // The guard acts only when nothing is stored: a stored "publik" stays, even with an own-key engine.
-        for (stored, own_key) in [("own_key", false), ("publik", true)] {
+        // The gate answers only when nothing is stored: a stored answer stays, whatever the engine.
+        for (stored, engine) in [("own_key", CleanupMode::Publik), ("publik", CleanupMode::Local)] {
             let wallet = Arc::new(Mutex::new(json!({ "claim_state": "claimed", "plan": { "kind": "none" }, "balance_micros": 0 })));
             let (_back, dir) = gate_setup(&format!("kept-{stored}"), &wallet, json!(stored));
-            let mut ui = FakeUi { wallet: wallet.clone(), screens: vec![], opened: vec![], own_key };
+            let mut ui = FakeUi { wallet: wallet.clone(), screens: vec![], opened: vec![], start: choice_for(engine) };
             let (_, _, choice) = ensure_signed_in(&mut ui);
             assert!(ui.screens.is_empty(), "{stored}: no screen at all: {:?}", ui.screens);
             assert_eq!(choice.as_deref(), Some(stored));
@@ -1121,22 +1129,19 @@ mod tests {
     }
 
     #[test]
-    fn only_an_own_key_engine_with_its_key_is_own_key() {
-        fn every_key(_: &str) -> bool {
-            true
+    fn the_automatic_answer_never_changes_the_engine() {
+        for engine in ENGINES {
+            assert_eq!(engine_for_choice(engine, Some(choice_for(engine))), engine, "{engine:?}");
+            assert_eq!(engine_for_choice(engine, None), engine, "{engine:?}: no answer changes nothing");
         }
-        fn no_key(_: &str) -> bool {
-            false
+        assert_eq!(choice_for(CleanupMode::Publik), "publik");
+        for engine in [CleanupMode::Local, CleanupMode::Raw, CleanupMode::OpenAi, CleanupMode::Anthropic] {
+            assert_eq!(choice_for(engine), "own_key", "{engine:?}");
         }
-        assert!(own_key_engine(CleanupMode::OpenAi, |a| a == "openai_api_key"));
-        assert!(own_key_engine(CleanupMode::Anthropic, |a| a == "anthropic_api_key"));
-        assert!(!own_key_engine(CleanupMode::OpenAi, no_key), "OpenAI with no key: publik");
-        assert!(!own_key_engine(CleanupMode::Anthropic, no_key), "Anthropic with no key: publik");
-        assert!(!own_key_engine(CleanupMode::OpenAi, |a| a == "anthropic_api_key"), "the other engine's key does not count");
-        assert!(!own_key_engine(CleanupMode::Anthropic, |a| a == "openai_api_key"), "the other engine's key does not count");
-        for mode in [CleanupMode::Local, CleanupMode::Raw, CleanupMode::Publik] {
-            assert!(!own_key_engine(mode, every_key), "{mode:?}: publik");
-        }
+        // A stored answer from Settings → Cleanup Engine works as before.
+        assert_eq!(engine_for_choice(CleanupMode::Local, Some("publik")), CleanupMode::Publik, "picking publik API");
+        assert_eq!(engine_for_choice(CleanupMode::Publik, Some("own_key")), CleanupMode::Local, "leaving publik API");
+        assert_eq!(engine_for_choice(CleanupMode::OpenAi, Some("own_key")), CleanupMode::OpenAi);
     }
 
     #[test]

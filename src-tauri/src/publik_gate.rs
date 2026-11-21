@@ -131,9 +131,9 @@ impl GateUi for Window {
         let _ = std::process::Command::new("xdg-open").arg(url).spawn();
     }
 
-    /// Signed in with no stored answer: an engine that runs on the person's own key keeps it.
-    fn own_key_in_use(&mut self) -> bool {
-        publik::own_key_engine_in_use()
+    /// Signed in with no stored answer: the answer that keeps the person's cleanup engine.
+    fn start_choice(&mut self) -> &'static str {
+        publik::start_choice()
     }
 }
 
